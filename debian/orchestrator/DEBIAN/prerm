@@ -1,0 +1,4 @@
+#!/bin/sh
+
+systemctl disable arduino-orchestrator
+systemctl stop arduino-orchestrator
