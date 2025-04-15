@@ -6,6 +6,8 @@ require (
 	github.com/arduino/go-paths-helper v1.12.1
 	github.com/bcmi-labs/arduino-iot-cloud-data-pipeline/pkg/config v0.0.0-20250428100153-17913ab43000
 	github.com/davecgh/go-spew v1.1.1
+	github.com/djherbis/buffer v1.1.0
+	github.com/djherbis/nio/v3 v3.0.1
 	github.com/docker/docker v28.0.4+incompatible
 	github.com/spf13/cobra v1.9.1
 	github.com/stretchr/testify v1.10.0
@@ -15,11 +17,8 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
-
 require (
 	github.com/BurntSushi/toml v1.4.0 // indirect
-	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.30.4 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.27.31 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.30 // indirect
@@ -34,6 +33,12 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.26.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.30.5 // indirect
 	github.com/aws/smithy-go v1.20.4 // indirect
+	github.com/jmespath/go-jmespath v0.4.0 // indirect
+	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
+)
+
+require (
+	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/go-connections v0.5.0 // indirect
@@ -43,7 +48,6 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/term v0.5.2 // indirect
 	github.com/morikuni/aec v1.0.0 // indirect
