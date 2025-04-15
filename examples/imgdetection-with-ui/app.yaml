@@ -1,0 +1,11 @@
+display-name: Image detection with UI
+description: Image detection with UI
+
+ports:
+  - 7860
+
+module-dependencies:
+  - arduino/object_detection
+
+models:
+  - vision/yolo11
