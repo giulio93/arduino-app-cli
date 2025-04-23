@@ -19,7 +19,18 @@ import (
 	"github.com/arduino/arduino-app-cli/pkg/parser"
 )
 
-const pythonImage = "arduino-python-base:latest"
+var pythonImage string
+
+func init() {
+	registryBase := os.Getenv("DOCKER_REGISTRY_BASE")
+	repoTag := os.Getenv("DOCKER_TAG")
+
+	pythonImage = registryBase
+	if repoTag != "" {
+		pythonImage += ":" + repoTag
+	}
+	fmt.Println("Using pythonImage: ", pythonImage)
+}
 
 func main() {
 	docker, err := dockerClient.NewClientWithOpts(
@@ -81,7 +92,7 @@ func main() {
 		},
 		&cobra.Command{
 			Use:   "provision",
-			Short: "Provision the Python app",
+			Short: "Makes sure the Python app deps are downloaded and running",
 			Run: func(cmd *cobra.Command, args []string) {
 				provisionHandler(cmd.Context(), docker, parsedApp)
 			},
@@ -104,7 +115,21 @@ func getProvisioningStateDir(app parser.App) *paths.Path {
 	return cacheDir
 }
 
+func pullBasePythonContainer(ctx context.Context) {
+	process, err := paths.NewProcess(nil, "docker", "pull", pythonImage)
+	if err != nil {
+		log.Panic(err)
+	}
+	process.RedirectStdoutTo(os.Stdout)
+	process.RedirectStderrTo(os.Stderr)
+	err = process.RunWithinContext(ctx)
+	if err != nil {
+		log.Panic(err)
+	}
+}
+
 func provisionHandler(ctx context.Context, docker *dockerClient.Client, app parser.App) {
+	pullBasePythonContainer(ctx)
 	pwd, _ := os.Getwd()
 	resp, err := docker.ContainerCreate(ctx, &container.Config{
 		Image:      pythonImage,
