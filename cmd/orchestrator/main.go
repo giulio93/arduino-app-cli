@@ -2,20 +2,20 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"log/slog"
+	"net/http"
 	"os"
-	"os/user"
-	"strings"
+	"time"
 
-	"github.com/arduino/go-paths-helper"
-	"github.com/docker/docker/api/types/container"
 	dockerClient "github.com/docker/docker/client"
 	"github.com/spf13/cobra"
 	"go.bug.st/cleanup"
-	"go.bug.st/f"
-	"gopkg.in/yaml.v3"
 
+	"github.com/arduino/arduino-app-cli/internal/api"
+	"github.com/arduino/arduino-app-cli/internal/orchestrator"
 	"github.com/arduino/arduino-app-cli/pkg/parser"
 )
 
@@ -51,6 +51,9 @@ func main() {
 		Use:   "app <APP_PATH>",
 		Short: "A CLI to manage the Python app",
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			if cmd.Name() == "daemon" {
+				return
+			}
 			if len(args) != 1 {
 				_ = cmd.Help()
 				os.Exit(1)
@@ -90,7 +93,7 @@ func main() {
 			Use:   "list",
 			Short: "List all running Python apps",
 			Run: func(cmd *cobra.Command, args []string) {
-				listHandler(cmd.Context(), parsedApp)
+				listHandler(cmd.Context())
 			},
 		},
 		&cobra.Command{
@@ -98,6 +101,13 @@ func main() {
 			Short: "Makes sure the Python app deps are downloaded and running",
 			Run: func(cmd *cobra.Command, args []string) {
 				provisionHandler(cmd.Context(), docker, parsedApp)
+			},
+		},
+		&cobra.Command{
+			Use:   "daemon",
+			Short: "Run an HTTP server to expose orchestrator functionality thorough REST API",
+			Run: func(cmd *cobra.Command, args []string) {
+				httpHandler(cmd.Context(), docker)
 			},
 		},
 	)
@@ -110,228 +120,50 @@ func main() {
 	}
 }
 
-func getProvisioningStateDir(app parser.App) *paths.Path {
-	cacheDir := app.FullPath.Join(".cache")
-	if err := cacheDir.MkdirAll(); err != nil {
-		panic(err)
-	}
-	return cacheDir
-}
-
-func pullBasePythonContainer(ctx context.Context) {
-	process, err := paths.NewProcess(nil, "docker", "pull", pythonImage)
-	if err != nil {
-		log.Panic(err)
-	}
-	process.RedirectStdoutTo(os.Stdout)
-	process.RedirectStderrTo(os.Stderr)
-	err = process.RunWithinContext(ctx)
-	if err != nil {
-		log.Panic(err)
-	}
-}
-
 func provisionHandler(ctx context.Context, docker *dockerClient.Client, app parser.App) {
-	pullBasePythonContainer(ctx)
-	resp, err := docker.ContainerCreate(ctx, &container.Config{
-		Image:      pythonImage,
-		User:       getCurrentUser(),
-		Entrypoint: []string{"/run.sh", "provision"},
-	}, &container.HostConfig{
-		Binds:      []string{app.FullPath.String() + ":/app"},
-		AutoRemove: true,
-	}, nil, nil, app.Name)
-	if err != nil {
-		log.Panic(err)
-	}
-
-	fmt.Println("\nLaunching the base Python image to get the modules/bricks details...")
-
-	waitCh, errCh := docker.ContainerWait(ctx, resp.ID, container.WaitConditionNextExit)
-	if err := docker.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		log.Panic(err)
-	}
-	fmt.Println("Provisioning container started with ID:", resp.ID)
-
-	select {
-	case result := <-waitCh:
-		if result.Error != nil {
-			log.Panic("Provisioning container wait error:", result.Error.Message)
-		}
-		fmt.Println("Provisioning container exited with status code:", result.StatusCode)
-	case err := <-errCh:
-		log.Panic("Error waiting for container:", err)
-	}
-
-	generateMainComposeFile(ctx, app)
-}
-
-func generateMainComposeFile(ctx context.Context, app parser.App) {
-	provisioningStateDir := getProvisioningStateDir(app)
-
-	var composeFiles paths.PathList
-	for _, dep := range app.Descriptor.ModuleDependencies {
-		composeFilePath := provisioningStateDir.Join("compose", dep.Name, "module_compose.yaml")
-		if composeFilePath.Exist() {
-			composeFiles.Add(composeFilePath)
-			fmt.Printf("- Using module: %s\n", dep.Name)
-		} else {
-			fmt.Printf("- Using module: %s (not found)\n", dep.Name)
-		}
-	}
-
-	// Create a single docker-mainCompose that includes all the required services
-	mainComposeFile := provisioningStateDir.Join("app-compose.yaml")
-
-	type service struct {
-		Image      string   `yaml:"image"`
-		DependsOn  []string `yaml:"depends_on,omitempty"`
-		Volumes    []string `yaml:"volumes"`
-		Devices    []string `yaml:"devices"`
-		Ports      []string `yaml:"ports"`
-		User       string   `yaml:"user"`
-		Entrypoint string   `yaml:"entrypoint"`
-	}
-	type mainService struct {
-		Main service `yaml:"main"`
-	}
-	var mainAppCompose struct {
-		Name     string       `yaml:"name"`
-		Include  []string     `yaml:"include,omitempty"`
-		Services *mainService `yaml:"services,omitempty"`
-	}
-	writeMainCompose := func() {
-		data, _ := yaml.Marshal(mainAppCompose)
-		if err := mainComposeFile.WriteFile(data); err != nil {
-			log.Panic(err)
-		}
-	}
-
-	// Merge compose
-	mainAppCompose.Include = composeFiles.AsStrings()
-	mainAppCompose.Name = app.Name
-	writeMainCompose()
-
-	fmt.Printf("\nCompose file for the App '\033[0;35m%s\033[0m' created, launching...\n", app.Name)
-
-	// docker compose -f app-compose.yml config --services
-	process, err := paths.NewProcess(nil, "docker", "compose", "-f", mainComposeFile.String(), "config", "--services")
-	if err != nil {
-		log.Panic(err)
-	}
-	stdout, stderr, err := process.RunAndCaptureOutput(ctx)
-	if err != nil {
-		log.Panic(err, " stderr:"+string(stderr))
-	}
-	if len(stderr) > 0 {
-		fmt.Println("stderr:", string(stderr))
-	}
-	services := strings.Split(strings.TrimSpace(string(stdout)), "\n")
-	services = f.Filter(services, f.NotEquals("main"))
-
-	ports := make([]string, len(app.Descriptor.Ports))
-	for i, p := range app.Descriptor.Ports {
-		ports[i] = fmt.Sprintf("%d:%d", p, p)
-	}
-
-	mainAppCompose.Services = &mainService{
-		Main: service{
-			Image:      pythonImage, // TODO: when we will handle versioning change this
-			Volumes:    []string{app.FullPath.String() + ":/app"},
-			Ports:      ports,
-			Devices:    getDevices(),
-			Entrypoint: "/run.sh",
-			DependsOn:  services,
-			User:       getCurrentUser(),
-		},
-	}
-	writeMainCompose()
+	orchestrator.ProvisionApp(ctx, pythonImage, docker, app)
 }
 
 func startHandler(ctx context.Context, app parser.App) {
-	provisioningStateDir := getProvisioningStateDir(app)
-	mainCompose := provisioningStateDir.Join("app-compose.yaml")
-	process, err := paths.NewProcess(nil, "docker", "compose", "-f", mainCompose.String(), "up", "-d", "--remove-orphans")
-	if err != nil {
-		log.Panic(err)
-	}
-	process.RedirectStdoutTo(os.Stdout)
-	process.RedirectStderrTo(os.Stderr)
-	err = process.RunWithinContext(ctx)
-	if err != nil {
-		log.Panic(err)
-	}
-
-	fmt.Printf("App '\033[0;35m%s\033[0m' started: Docker Compose running in detached mode.\n", app.Name)
+	orchestrator.StartApp(ctx, app)
 }
 
 func stopHandler(ctx context.Context, app parser.App) {
-	provisioningStateDir := getProvisioningStateDir(app)
-	mainCompose := provisioningStateDir.Join("app-compose.yaml")
-	process, err := paths.NewProcess(nil, "docker", "compose", "-f", mainCompose.String(), "stop")
-	if err != nil {
-		log.Panic(err)
-	}
-	process.RedirectStdoutTo(os.Stdout)
-	process.RedirectStderrTo(os.Stderr)
-	err = process.RunWithinContext(ctx)
-	if err != nil {
-		log.Panic(err)
-	}
-
-	fmt.Printf("Containers for the App '\033[0;35m%s\033[0m' stopped and removed\n", app.Name)
+	orchestrator.StopApp(ctx, app)
 }
 
-// TODO: for now we show only logs for the main python container.
-// In the future we should also add logs for other services too.
 func logsHandler(ctx context.Context, app parser.App) {
-	provisioningStateDir := getProvisioningStateDir(app)
-	mainCompose := provisioningStateDir.Join("app-compose.yaml")
-	process, err := paths.NewProcess(nil, "docker", "compose", "-f", mainCompose.String(), "logs", "main", "-f")
+	orchestrator.AppLogs(ctx, app)
+}
+
+func listHandler(ctx context.Context) {
+	res, err := orchestrator.ListApps(ctx)
 	if err != nil {
-		log.Panic(err)
+		slog.Error(err.Error())
+		return
 	}
-	process.RedirectStdoutTo(os.Stdout)
-	process.RedirectStderrTo(os.Stderr)
-	err = process.RunWithinContext(ctx)
-	if err != nil {
-		log.Println(err)
+	fmt.Println(string(res.Stdout))
+	if len(res.Stderr) > 0 {
+		fmt.Println(string(res.Stderr))
 	}
 }
 
-// TODO: show arduino app in execution
-func listHandler(ctx context.Context, app parser.App) {
-	provisioningStateDir := getProvisioningStateDir(app)
-	mainCompose := provisioningStateDir.Join("app-compose.yaml")
-	process, err := paths.NewProcess(nil, "docker", "compose", "-f", mainCompose.String(), "ls")
-	if err != nil {
-		log.Panic(err)
+func httpHandler(ctx context.Context, dockerClient *dockerClient.Client) {
+	apiSrv := api.NewHTTPRouter(dockerClient)
+	httpSrv := http.Server{
+		Addr:              ":8080",
+		Handler:           apiSrv,
+		ReadHeaderTimeout: 60 * time.Second,
 	}
-	// stream output
-	process.RedirectStdoutTo(os.Stdout)
-	process.RedirectStderrTo(os.Stderr)
+	go func() {
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			panic(err.Error())
+		}
+	}()
 
-	err = process.RunWithinContext(ctx)
-	if err != nil {
-		log.Panic(err)
-	}
-}
+	<-ctx.Done()
 
-func getDevices() []string {
-	deviceList, err := paths.New("/dev").ReadDir()
-	if err != nil {
-		panic(err)
-	}
-	deviceList.FilterPrefix("video")
-	return deviceList.AsStrings()
-}
-
-func getCurrentUser() string {
-	// Map user to avoid permission issues.
-	// MacOS and Windows uses a VM so we don't need to map the user.
-	user, err := user.Current()
-	if err != nil {
-		panic(err)
-	}
-	return user.Uid + ":" + user.Gid
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	_ = httpSrv.Shutdown(ctx)
+	cancel()
 }
