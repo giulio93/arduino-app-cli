@@ -51,16 +51,14 @@ func Load(appPath string) (App, error) {
 		app.MainPythonFile = path.Join("python", "main.py")
 	}
 
-	if path.Join("sketch", path.Base()+".ino").Exist() {
-		// TODO: check other possible extensions, like .pde?
-		app.MainSketchFile = path.Join("sketch", path.Base()+".ino")
+	if path.Join("sketch", "sketch.ino").Exist() {
+		// TODO: check sketch casing?
+		app.MainSketchFile = path.Join("sketch", "sketch.ino")
 	}
 
 	if app.MainPythonFile == nil && app.MainSketchFile == nil {
 		return App{}, errors.New("main python file and sketch file missing from app")
 	}
-
-	// TODO: check sketch casing?
 
 	return app, nil
 }

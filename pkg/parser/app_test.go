@@ -1,27 +1,32 @@
 package parser
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/arduino/go-paths-helper"
 	"github.com/stretchr/testify/assert"
+	"go.bug.st/f"
 )
 
 func TestLoad(t *testing.T) {
-	appFolderPath := paths.New("testdata", "AppSimple")
-	mainPythonPath := appFolderPath.Join("python", "main.py")
-	mainSketchPath := appFolderPath.Join("sketch", "AppSimple.ino")
+	t.Run("empty", func(t *testing.T) {
+		app, err := Load("")
+		assert.Error(t, err)
+		assert.Empty(t, app)
+	})
 
-	app, err := Load("")
-	assert.Empty(t, app)
-	assert.Error(t, err)
+	t.Run("AppSimple", func(t *testing.T) {
+		app, err := Load("testdata/AppSimple")
+		assert.NoError(t, err)
+		assert.NotEmpty(t, app)
 
-	// Load app
-	app, err = Load(appFolderPath.String())
-	assert.NoError(t, err)
-	assert.True(t, mainPythonPath.EquivalentTo(app.MainPythonFile))
-	assert.True(t, mainSketchPath.EquivalentTo(app.MainSketchFile))
-	assert.True(t, appFolderPath.EquivalentTo(app.FullPath))
+		assert.NotNil(t, app.MainPythonFile)
+		assert.Equal(t, f.Must(filepath.Abs("testdata/AppSimple/python/main.py")), app.MainPythonFile.String())
+
+		assert.NotNil(t, app.MainSketchFile)
+		assert.Equal(t, f.Must(filepath.Abs("testdata/AppSimple/sketch/sketch.ino")), app.MainSketchFile.String())
+	})
 }
 
 func TestMissingDescriptor(t *testing.T) {
@@ -30,8 +35,8 @@ func TestMissingDescriptor(t *testing.T) {
 	// Load app
 	app, err := Load(appFolderPath.String())
 	assert.Error(t, err)
-	assert.Empty(t, app)
 	assert.ErrorContains(t, err, "descriptor app.yaml file missing from app")
+	assert.Empty(t, app)
 }
 
 func TestMissingMains(t *testing.T) {
@@ -40,6 +45,6 @@ func TestMissingMains(t *testing.T) {
 	// Load app
 	app, err := Load(appFolderPath.String())
 	assert.Error(t, err)
-	assert.Empty(t, app)
 	assert.ErrorContains(t, err, "main python file and sketch file missing from app")
+	assert.Empty(t, app)
 }

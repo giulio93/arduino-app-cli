@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path"
 	"time"
 
 	dockerClient "github.com/docker/docker/client"
@@ -19,19 +20,25 @@ import (
 	"github.com/arduino/arduino-app-cli/pkg/parser"
 )
 
+const DockerRegistry = "ghcr.io/bcmi-labs/"
+const DockerPythonImage = "arduino/appslab-python-apps-base:0.0.2"
+
 var pythonImage string
 
 func init() {
 	// Registry base: contains the registry and namespace, common to all Arduino docker images.
 	registryBase := os.Getenv("DOCKER_REGISTRY_BASE")
+	if registryBase == "" {
+		registryBase = DockerRegistry
+	}
 
 	// Python image: image name (repository) and optionally a tag.
 	pythonImageAndTag := os.Getenv("DOCKER_PYTHON_BASE_IMAGE")
-
-	pythonImage = registryBase
-	if pythonImageAndTag != "" {
-		pythonImage += pythonImageAndTag
+	if pythonImageAndTag == "" {
+		pythonImageAndTag = DockerPythonImage
 	}
+
+	pythonImage = path.Join(registryBase, pythonImageAndTag)
 	fmt.Println("Using pythonImage:", pythonImage)
 }
 
@@ -78,7 +85,10 @@ func main() {
 			Use:   "start",
 			Short: "Start the Python app",
 			Run: func(cmd *cobra.Command, args []string) {
-				provisionHandler(cmd.Context(), docker, parsedApp)
+				if parsedApp.MainPythonFile != nil {
+					provisionHandler(cmd.Context(), docker, parsedApp)
+				}
+
 				startHandler(cmd.Context(), parsedApp)
 			},
 		},
