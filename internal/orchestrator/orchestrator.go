@@ -1124,8 +1124,6 @@ func compileUploadSketch(
 	arduinoApp *app.ArduinoApp,
 	w io.Writer,
 ) error {
-	const fqbn = "arduino:zephyr:unoq"
-
 	logrus.SetLevel(logrus.ErrorLevel) // Reduce the log level of arduino-cli
 	srv := commands.NewArduinoCoreServer()
 
@@ -1147,6 +1145,9 @@ func compileUploadSketch(
 	}
 	sketch := sketchResp.GetSketch()
 	profile := sketch.GetDefaultProfile().GetName()
+	if profile == "" {
+		return fmt.Errorf("sketch %q has no default profile", sketchPath)
+	}
 	initReq := &rpc.InitRequest{
 		Instance:   inst,
 		SketchPath: sketchPath,
@@ -1186,17 +1187,12 @@ func compileUploadSketch(
 
 	// build the sketch
 	server, getCompileResult := commands.CompilerServerToStreams(ctx, w, w, nil)
-
-	// TODO: add build cache
 	compileReq := rpc.CompileRequest{
 		Instance:   inst,
-		Fqbn:       fqbn,
+		Fqbn:       "arduino:zephyr:unoq",
 		SketchPath: sketchPath,
 		BuildPath:  buildPath,
 		Jobs:       2,
-	}
-	if profile == "" {
-		compileReq.Libraries = []string{sketchPath + "/../../sketch-libraries"}
 	}
 
 	err = srv.Compile(&compileReq, server)
@@ -1220,12 +1216,67 @@ func compileUploadSketch(
 		slog.Info("Used library " + lib.GetName() + " (" + lib.GetVersion() + ") in " + lib.GetInstallDir())
 	}
 
+	if err := uploadSketchInRam(ctx, w, srv, inst, sketchPath, buildPath); err != nil {
+		slog.Warn("failed to upload in ram mode, trying to configure the board in ram mode, and retry", slog.String("error", err.Error()))
+		if err := configureMicroInRamMode(ctx, w, srv, inst); err != nil {
+			return err
+		}
+		return uploadSketchInRam(ctx, w, srv, inst, sketchPath, buildPath)
+	}
+	return nil
+}
+
+func uploadSketchInRam(ctx context.Context,
+	w io.Writer,
+	srv rpc.ArduinoCoreServiceServer,
+	inst *rpc.Instance,
+	sketchPath string,
+	buildPath string,
+) error {
 	stream, _ := commands.UploadToServerStreams(ctx, w, w)
-	return srv.Upload(&rpc.UploadRequest{
+	if err := srv.Upload(&rpc.UploadRequest{
 		Instance:   inst,
-		Fqbn:       fqbn,
+		Fqbn:       "arduino:zephyr:unoq:flash_mode=ram",
 		SketchPath: sketchPath,
 		ImportDir:  buildPath,
+	}, stream); err != nil {
+		return err
+	}
+	return nil
+}
+
+// configureMicroInRamMode uploads an empty binary overing any sketch previously uploaded in flash.
+// This is required to be able to upload sketches in ram mode after if there is already a sketch in flash.
+func configureMicroInRamMode(
+	ctx context.Context,
+	w io.Writer,
+	srv rpc.ArduinoCoreServiceServer,
+	inst *rpc.Instance,
+) error {
+	emptyBinDir := paths.New("/tmp/empty")
+	_ = emptyBinDir.MkdirAll()
+	defer func() { _ = emptyBinDir.RemoveAll() }()
+
+	zeros, err := os.Open("/dev/zero")
+	if err != nil {
+		return err
+	}
+	defer zeros.Close()
+
+	empty, err := emptyBinDir.Join("empty.ino.elf-zsk.bin").Create()
+	if err != nil {
+		return err
+	}
+	defer empty.Close()
+	if _, err := io.CopyN(empty, zeros, 50); err != nil {
+		return err
+	}
+
+	stream, _ := commands.UploadToServerStreams(ctx, w, w)
+	return srv.Upload(&rpc.UploadRequest{
+		Instance:  inst,
+		Fqbn:      "arduino:zephyr:unoq:flash_mode=flash",
+		ImportDir: emptyBinDir.String(),
 	}, stream)
 }
 
