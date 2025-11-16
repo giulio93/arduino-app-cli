@@ -54,6 +54,10 @@ tasks:
       - task: generate
       - go test $(go list ./internal/... ./cmd/... | grep -v internal/e2e/updatetest) -v -race {{ .CLI_ARGS }}
 
+  test:board:
+    cmds:
+      - go test --timeout 30m -v ./internal/e2e/boardtest
+
   test:update:
     cmds:
       - go test --timeout 30m -v ./internal/e2e/updatetest
