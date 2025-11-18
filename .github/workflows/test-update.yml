@@ -26,4 +26,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.ARDUINOBOT_TOKEN }}
         run: |
-          go tool task test:update
+          go tool task arduino-app-cli:build:local

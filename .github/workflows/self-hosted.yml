@@ -18,6 +18,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # - name: Install GitHub CLI
+      #   run: sudo apt-get update && sudo apt-get install -y gh
+
       - name: Run dep package update test
         run: |
-          go tool task test:board
+          go tool task arduino-app-cli:build:local
