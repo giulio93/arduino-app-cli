@@ -1,26 +1,21 @@
-name: CI on self-hosted
+name: Build deb package for self-hosted
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
+  workflow_run:
+    workflows: [ "Build deb package for self-hosted" ]   # MUST match Workflow A name
+    types:
+      - completed
 
 jobs:
   hw-test:
     runs-on: self-hosted   # usa il runner che hai appena configurato
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Download deb artifact
+        uses: actions/download-artifact@v4
         with:
-          go-version-file: go.mod
+          name: arduino-app-cli-deb
+          path: ./deb
 
-      # - name: Install GitHub CLI
-      #   run: sudo apt-get update && sudo apt-get install -y gh
-
-      - name: Run dep package update test
+      - name: Install package
         run: |
-          go tool task arduino-app-cli:build:local
+          sudo dpkg -i ./deb/*.deb || sudo apt-get -f install -y
