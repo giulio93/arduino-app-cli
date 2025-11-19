@@ -30,13 +30,13 @@ jobs:
 
       - name: Build deb
         run: |
-          go tool task build-deb VERSION="${VERSION}" ARCH="${ARCH}"
+          go tool task test:board
 
       - name: Show build output
-        run: ls -R ./build
+        run: ls -R ./internal/e2e/boardtest/build
 
       - name: Upload debian package artifact
         uses: actions/upload-artifact@v4
         with:
           name: arduino-app-cli-deb
-          path: ./build/*.deb
+          path: ./internal/e2e/boardtest/build/**/*
