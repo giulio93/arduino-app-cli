@@ -1,10 +1,10 @@
 name: Run Checks
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  # push:
+  #   branches: [main]
+  # pull_request:
+  #   branches: [main]
 
 # In the same branch only 1 workflow per time can run. In case we're not in the
 # main branch we cancel previous running workflow

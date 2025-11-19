@@ -1,6 +1,9 @@
 name: Build deb package for self-hosted
 
 on:
+  push:
+    branches:
+      - main
   workflow_run:
     workflows: [ "Build deb package for self-hosted" ]   # MUST match Workflow A name
     types:
@@ -8,13 +11,14 @@ on:
 
 jobs:
   hw-test:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: self-hosted   # usa il runner che hai appena configurato
     steps:
       - name: Download deb artifact
         uses: actions/download-artifact@v4
         with:
           name: arduino-app-cli-deb
-          path: ./deb
+          path: ./build/*.deb
 
       - name: Install package
         run: |
