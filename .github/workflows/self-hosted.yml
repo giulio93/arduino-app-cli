@@ -1,25 +1,27 @@
-name: Build deb package for self-hosted
+name: HW test on self-hosted
 
 on:
-  push:
-    branches:
-      - main
   workflow_run:
-    workflows: [ "Build deb package for self-hosted" ]   # MUST match Workflow A name
+    workflows: [ "Build deb package for self-hosted workflow" ]  # MUST match Workflow 1's 'name'
     types:
       - completed
 
 jobs:
   hw-test:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    runs-on: self-hosted   # usa il runner che hai appena configurato
+    runs-on: self-hosted
+
     steps:
-      - name: Download deb artifact
+      - name: Download deb artifact from previous workflow
         uses: actions/download-artifact@v4
         with:
           name: arduino-app-cli-deb
-          path: ./build/*.deb
+          # this is the important part: use the run id of the workflow that triggered this one
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.ARDUINOBOT_TOKEN }}
+          path: ./deb   # must be a directory
 
       - name: Install package
         run: |
+          ls -R ./deb
           sudo dpkg -i ./deb/*.deb || sudo apt-get -f install -y
