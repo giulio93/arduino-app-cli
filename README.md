@@ -8,6 +8,8 @@
 
 For guidance on installation and development, see the [User documentation].
 
+For details on the model installation architecture and how models are downloaded from Qualcomm AI Hub, Hugging Face, and Edge Impulse, see the [Model Installation Architecture] documentation.
+
 ## Quickstart
 
 // TODO
@@ -36,3 +38,4 @@ GPL-3.0-or-later
 [contributor guide]: docs/CONTRIBUTING.md
 [security policy]: https://github.com/arduino/arduino-app-cli/security/policy
 [contributors]: https://github.com/arduino/arduino-app-cli/graphs/contributors
+[Model Installation Architecture]: docs/model-installation-architecture.md

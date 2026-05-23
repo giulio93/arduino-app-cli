@@ -27,9 +27,28 @@ var ErrZipPathTraversal = errors.New("zip entry escapes destination directory")
 // typically passes models_repository as destDir and lets the archive lay out
 // its own model_directory subtree.
 //
-// archive/zip requires io.ReaderAt + a known size, so the stream is buffered
-// to a temp file inside destDir first (kept on the same filesystem to avoid a
-// cross-device move on close).
+// ## Buffering Strategy (Design Rationale)
+//
+// The stream is buffered to a temporary file inside destDir first (kept on the
+// same filesystem to avoid a cross-device move on close), then extracted using
+// the standard archive/zip library.
+//
+// This buffering approach was chosen because:
+//
+//   1. Go's archive/zip requires io.ReaderAt (random access), which prevents
+//      true streaming extraction without a custom ZIP parser.
+//
+//   2. For UNO Q (64GB eMMC, 4GB RAM), buffering is practical and simpler:
+//      - Memory: ZIP size at peak (acceptable for typical model sizes)
+//      - Disk: Temp buffer + extracted files (1x total file size overhead)
+//      - Simplicity: Uses Go stdlib, no external dependencies
+//
+//   3. Future enhancement if needed: If supporting devices with <1GB free disk
+//      or models >4GB, implement streaming with klauspost/compress/zip or
+//      custom ZIP parser. This would reduce memory to ~1MB constant.
+//
+// See docs/STREAMING-VS-BUFFERING.md for detailed comparison with Python's
+// stream-unzip approach and when each strategy is optimal.
 //
 // Returns the list of files written, so callers can verify what landed where.
 func ExtractZipStream(rc io.ReadCloser, destDir *paths.Path) ([]*paths.Path, error) {
