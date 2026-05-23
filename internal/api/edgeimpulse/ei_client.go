@@ -11,6 +11,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -80,6 +82,60 @@ func (c *EIClient) DownloadHistoricDeployment(ctx context.Context, projectID int
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("%w: %s", errorMessage(resp.StatusCode), string(b))
+	}
+
+	return resp.Body, nil
+}
+
+// DownloadDeployment downloads an Edge Impulse build artifact directly via the
+// parameterized download endpoint:
+//
+//	GET {studioBaseURL}/{projectID}/deployment/download
+//	    ?type={target}&modelType={modelType}&impulseId={impulseID}
+//
+// Unlike DownloadHistoricDeployment, this endpoint is **unauthenticated** — no
+// API key is required, as long as the (projectID, impulseID, target, modelType)
+// tuple identifies an existing build. It is therefore a package-level function
+// rather than a method on EIClient, so callers don't need to construct an
+// authenticated client just to download a public build.
+//
+// studioBaseURL is the EI Studio v1 API base, e.g.
+// https://studio.edgeimpulse.com/v1/api . If nil, the default is used.
+//
+// This mirrors the download flow used by the Python models-downloader in
+// arduino/app-bricks-py#227.
+func DownloadDeployment(ctx context.Context, studioBaseURL *url.URL, httpClient *http.Client, projectID, impulseID int, target, modelType string) (io.ReadCloser, error) {
+	if studioBaseURL == nil {
+		u, _ := url.Parse("https://studio.edgeimpulse.com/v1/api")
+		studioBaseURL = u
+	}
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+
+	u := *studioBaseURL
+	u.Path = strings.TrimRight(u.Path, "/") + "/" + strconv.Itoa(projectID) + "/deployment/download"
+
+	q := u.Query()
+	q.Set("type", target)
+	q.Set("modelType", modelType)
+	q.Set("impulseId", strconv.Itoa(impulseID))
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build deployment download request: %w", err)
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to perform deployment download request: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		return nil, fmt.Errorf("%w: %s", errorMessage(resp.StatusCode), string(b))
 	}
 
