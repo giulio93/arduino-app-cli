@@ -49,11 +49,76 @@ type AIModel struct {
 	Metadata          map[string]string `yaml:"metadata,omitempty"`
 	IsInternal        bool              `yaml:"-"`
 	SupportedBoards   []string          `yaml:"supported_boards,omitempty"`
+
+	// Deployment captures the per-source download recipe added by
+	// arduino/app-bricks-py#227. Optional: legacy models without the block
+	// continue to load unchanged.
+	Deployment *Deployment `yaml:"deployment,omitempty"`
 }
 
 type BrickConfig struct {
 	ID                 string            `yaml:"id"`
 	ModelConfiguration map[string]string `yaml:"model_configuration"`
+}
+
+// Deployment describes which handler (ai-hub-handler / ei-handler /
+// hf-handler) is responsible for fetching the model and the per-platform
+// variables fed to it as environment variables.
+type Deployment struct {
+	Handler   string              `yaml:"handler"`
+	Platforms []DeploymentPlatform `yaml:"platforms"`
+}
+
+// DeploymentPlatform is one entry in the deployment.platforms list. The YAML
+// shape is a list of single-key maps, e.g.
+//
+//	platforms:
+//	  - ventunoq:
+//	      variables: { ... }
+//
+// We flatten that into {Name, Variables} for ergonomic access while still
+// round-tripping the on-disk format via UnmarshalYAML / MarshalYAML.
+type DeploymentPlatform struct {
+	Name      string            `yaml:"-"`
+	Variables map[string]string `yaml:"variables"`
+}
+
+// platformPayload is the inner half of a {name: {variables: ...}} entry.
+type platformPayload struct {
+	Variables map[string]string `yaml:"variables"`
+}
+
+func (p *DeploymentPlatform) UnmarshalYAML(unmarshal func(any) error) error {
+	var raw map[string]platformPayload
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+	for name, payload := range raw {
+		p.Name = name
+		p.Variables = payload.Variables
+		return nil
+	}
+	return nil
+}
+
+func (p DeploymentPlatform) MarshalYAML() (any, error) {
+	return map[string]platformPayload{
+		p.Name: {Variables: p.Variables},
+	}, nil
+}
+
+// VariablesFor returns the variable map for the named platform, or nil if
+// the model has no deployment block or no entry for that platform.
+func (m *AIModel) VariablesFor(platformName string) map[string]string {
+	if m == nil || m.Deployment == nil {
+		return nil
+	}
+	for _, p := range m.Deployment.Platforms {
+		if p.Name == platformName {
+			return p.Variables
+		}
+	}
+	return nil
 }
 
 type ModelsIndex struct {
