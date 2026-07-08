@@ -37,6 +37,7 @@ import (
 	linuxconfig "github.com/arduino/arduino-app-cli/internal/orchestrator/linuxConfig"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/modelsindex"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/peripherals"
+	"github.com/arduino/arduino-app-cli/internal/orchestrator/pipewire"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/servicesindex"
 	"github.com/arduino/arduino-app-cli/internal/platform"
 	"github.com/arduino/arduino-app-cli/internal/store"
@@ -156,6 +157,12 @@ func StartApp(
 	}
 
 	cb(StreamMessage{data: fmt.Sprintf("Starting app %q", appToStart.Name)})
+
+	if appNeedsAudio(bricksIndex, appToStart.Descriptor.Bricks) {
+		if err := pipewire.EnsureRunning(ctx); err != nil {
+			return fmt.Errorf("failed to start audio service: %w", err)
+		}
+	}
 
 	if err := setLedsToUserControlledMode(platform); err != nil {
 		slog.Debug("unable to set status leds", slog.String("error", err.Error()))
@@ -316,6 +323,10 @@ func stopAppWithCmd(ctx context.Context, docker command.Cli, platform platform.P
 
 	if err := restoreLedsState(platform); err != nil {
 		slog.Debug("unable to set status leds", slog.String("error", err.Error()))
+	}
+
+	if err := pipewire.TeardownIfUnneeded(ctx); err != nil {
+		slog.Debug("unable to tear down pipewire", slog.String("error", err.Error()))
 	}
 
 	callbackWriter := NewCallbackWriter(func(line string) {

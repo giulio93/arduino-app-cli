@@ -115,3 +115,25 @@ func checkRequiredDevices(bricksIndex *bricksindex.BricksIndex, appBricks []app.
 
 	return allErrors
 }
+
+// appNeedsAudio reports whether any of the app's bricks declare a real
+// (non-virtual) requirement on speaker or microphone hardware, i.e. whether
+// PipeWire needs to be running for the app to work.
+func appNeedsAudio(bricksIndex *bricksindex.BricksIndex, appBricks []app.Brick) bool {
+	for _, brick := range appBricks {
+		idxBrick, found := bricksIndex.FindBrickByID(brick.ID)
+		if !found {
+			continue
+		}
+		for _, deviceClass := range idxBrick.RequiredDevices {
+			if deviceClass != peripherals.SpeakerClass && deviceClass != peripherals.MicrophoneClass {
+				continue
+			}
+			if peripherals.HasVirtualDevice(deviceClass, brick.Devices) {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
