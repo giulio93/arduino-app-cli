@@ -554,7 +554,7 @@ func (m *ModelsIndex) precheck(ctx context.Context, cli client.APIClient, model 
 	// 3. disk
 	if res.SizeBytes > 0 && !res.Installed {
 		if err := hasSufficientDiskSpace(m.modelsDir, res.SizeBytes); err != nil {
-			return fail(fmt.Errorf("%w: %w", ErrInsufficientStorage, err))
+			return fail(err) // already ErrInsufficientStorage, with the sizes
 		}
 	}
 
