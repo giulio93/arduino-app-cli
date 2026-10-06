@@ -446,6 +446,6 @@ func (h *HandlersIndex) downloadModel(ctx context.Context, cli client.APIClient,
 
 // isBusyLine reports whether a download or delete line says another one holds the model.
 func isBusyLine(line string) bool {
-	e, ok := parseHandlerEvent(line)
-	return ok && e.IsError() && e.ErrorCode == codeInstallInProgress
+	e, _ := parseHandlerEvent(line)
+	return e.ErrorCode == codeInstallInProgress
 }
