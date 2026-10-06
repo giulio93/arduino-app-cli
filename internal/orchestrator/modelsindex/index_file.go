@@ -11,7 +11,6 @@ import (
 
 	"github.com/arduino/go-paths-helper"
 	"github.com/goccy/go-yaml"
-	"golang.org/x/sync/singleflight"
 )
 
 // The models index is <models dir>/.models-index.yaml. The listing container writes it, and
@@ -67,17 +66,10 @@ func readIndex(modelsDir *paths.Path) (models []AIModel, found bool, err error) 
 	return models, true, nil
 }
 
-// listingRuns makes the callers that find no index share one listing container per models dir.
-var listingRuns singleflight.Group
-
-// runListing runs the listing container, which rewrites the index. It is not canceled with
-// ctx: other callers may be waiting on the same run.
+// runListing runs the listing container, which rewrites the index.
 func (m *ModelsIndex) runListing(ctx context.Context) error {
 	if m.Handlers == nil || m.Handlers.listing == nil || m.cli == nil {
 		return nil
 	}
-	_, err, _ := listingRuns.Do(m.modelsDir.String(), func() (any, error) {
-		return nil, runListAction(context.WithoutCancel(ctx), m.cli, m.Handlers.listing, m.Handlers.configEnv)
-	})
-	return err
+	return runListAction(ctx, m.cli, m.Handlers.listing, m.Handlers.configEnv)
 }
