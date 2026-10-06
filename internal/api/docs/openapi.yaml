@@ -1234,13 +1234,15 @@ paths:
         schema:
           description: Filter models by bricks. If not specified, all models are returned.
           type: string
-      - description: Run the models listing again instead of answering from the cache.
-          Use after changing model files outside the API. Defaults to false.
+      - description: Run the models listing again, which rewrites the models index,
+          instead of reading the index as it is. Use after changing model files outside
+          the API. Defaults to false.
         in: query
         name: refresh
         schema:
-          description: Run the models listing again instead of answering from the
-            cache. Use after changing model files outside the API. Defaults to false.
+          description: Run the models listing again, which rewrites the models index,
+            instead of reading the index as it is. Use after changing model files
+            outside the API. Defaults to false.
           type: boolean
       responses:
         "200":

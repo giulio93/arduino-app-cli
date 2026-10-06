@@ -13,7 +13,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 
 	"github.com/docker/cli/cli/command"
@@ -147,68 +146,37 @@ type ModelsIndex struct {
 	Handlers        *HandlersIndex
 	cli             client.APIClient
 	plat            platform.Platform
-	mu              sync.RWMutex
-	cached          []AIModel
-	locksDir        *paths.Path
 }
 
-// Lookup answers several model queries against at most one listing run. Not safe for
+// Lookup answers several model queries against one read of the index. Not safe for
 // concurrent use.
 type Lookup struct {
 	idx    *ModelsIndex
 	models []AIModel
-	dry    []AIModel
 	err    error
 	loaded bool
 }
 
+// Refresh runs the listing container, which rewrites the index, and answers what it wrote.
 func (m *ModelsIndex) Refresh(ctx context.Context) ([]AIModel, error) {
-
-	models, err := m.listModels(ctx)
-	if err != nil {
+	if err := m.runListing(ctx); err != nil {
 		return nil, err
 	}
-	if len(models) == 0 {
-		return nil, ErrEmptyCatalog
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.cached = models
-
-	return models, nil
-}
-
-func (m *ModelsIndex) snapshot() []AIModel {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return slices.Clone(m.cached)
+	return m.listModels(ctx)
 }
 
 func (m *ModelsIndex) NewLookup() *Lookup {
 	return &Lookup{idx: m}
 }
 
-// listing runs on first use only, and remembers a failure: retrying it per query would
-// mean a container start per question.
+// listing reads the index on first use only, and remembers a failure.
 func (l *Lookup) listing(ctx context.Context) error {
 	if l.loaded {
 		return l.err
 	}
-	var models []AIModel
-
-	models = l.idx.snapshot()
-
-	if models == nil {
-		models, l.err = l.idx.Refresh(ctx)
-		l.loaded = true
-	}
-	if l.err != nil {
-		return l.err
-	}
-	l.models = slices.Clone(models)
+	l.models, l.err = l.idx.listModels(ctx)
 	l.loaded = true
-	return nil
+	return l.err
 }
 
 func (l *Lookup) ByID(ctx context.Context, id string) (*AIModel, error) {
@@ -264,25 +232,45 @@ func (m AIModel) NeedsNoDownload() bool {
 	return m.Deployment == nil || m.Deployment.PreLoaded || m.Deployment.Handler == ""
 }
 
+// listModels answers the models the index lists, plus the Edge Impulse custom models,
+// which are scanned here. An index not written yet is written first, by a listing run.
 func (m *ModelsIndex) listModels(ctx context.Context) ([]AIModel, error) {
-	known := m.loadDryModels()
-	if m.Handlers == nil || m.cli == nil {
-		return known, nil
+	models, found, err := readIndex(m.modelsDir)
+	if err == nil && !found {
+		if m.Handlers == nil || m.cli == nil {
+			// Nothing can write the index: the declarations are all there is.
+			if models = m.loadDryModels(); len(models) == 0 {
+				return nil, ErrEmptyCatalog
+			}
+			return models, nil
+		}
+		if err := m.runListing(ctx); err != nil {
+			return nil, err
+		}
+		models, found, err = readIndex(m.modelsDir)
+		if err == nil && !found {
+			err = fmt.Errorf("the listing did not write %s", modelsIndexFileName)
+		}
 	}
-	models, err := m.Handlers.getModelsInfo(ctx, m.cli, known)
 	if err != nil {
 		return nil, err
 	}
-	return models, nil
+	if len(models) == 0 {
+		return nil, ErrEmptyCatalog
+	}
+	return append(models, m.customModels()...), nil
 }
 
-func (m *ModelsIndex) loadDryModels() []AIModel {
+func (m *ModelsIndex) customModels() []AIModel {
 	eiModels, err := loadCustomModels(m.customModelsDir)
 	if err != nil {
 		slog.Error("cannot load edge impulse custom models", "err", err)
 	}
-	models := slices.Clone(m.InternalModels)
-	return append(models, eiModels...)
+	return eiModels
+}
+
+func (m *ModelsIndex) loadDryModels() []AIModel {
+	return append(slices.Clone(m.InternalModels), m.customModels()...)
 }
 
 // Load constructs a ModelsIndex. Pass the result of LoadHandlers as handlers;
@@ -315,7 +303,6 @@ func Load(plat platform.Platform, dir *paths.Path, modelsDir *paths.Path, custom
 		Handlers:        handlers,
 		cli:             cli,
 		plat:            plat,
-		locksDir:        cfg.ModelLocksDir(),
 	}, nil
 }
 
@@ -465,16 +452,15 @@ type PrecheckResult struct {
 }
 
 // PrecheckInstall runs, before a curated install opens its stream, everything that can
-// refuse it: the lock, the hub, what is on disk, the free space. Hold unlock until the
-// install returns.
-func (m *ModelsIndex) PrecheckInstall(ctx context.Context, docker command.Cli, id string, plat platform.Platform) (func(), PrecheckResult, error) {
+// refuse it: a download or delete already running, the hub, what is on disk, the free space.
+func (m *ModelsIndex) PrecheckInstall(ctx context.Context, docker command.Cli, id string, plat platform.Platform) (PrecheckResult, error) {
 	model, found := m.known(id)
 	if !found {
-		return func() {}, PrecheckResult{}, fmt.Errorf("no model with id %q: %w", id, ErrUnknownModel)
+		return PrecheckResult{}, fmt.Errorf("no model with id %q: %w", id, ErrUnknownModel)
 	}
 	if model.NeedsNoDownload() {
-		// Preinstalled: nothing to fetch, nothing to lock.
-		return func() {}, PrecheckResult{Installed: true}, nil
+		// Preinstalled: nothing to fetch.
+		return PrecheckResult{Installed: true}, nil
 	}
 	// The docker client is read only now: a caller with nothing to download passes none.
 	return m.precheck(ctx, docker.Client(), *model, id, false, plat)
@@ -485,21 +471,20 @@ func (m *ModelsIndex) PrecheckInstall(ctx context.Context, docker command.Cli, i
 // before its record was written leaves a file the listing ignores and the API cannot
 // delete. Only a listed model recorded from this link counts; anything else downloads
 // again, and the downloader clears the leftover first.
-func (m *ModelsIndex) PrecheckDownload(ctx context.Context, cli client.APIClient, modelURL, mmprojURL string, plat platform.Platform) (func(), PrecheckResult, error) {
-	unlock, res, err := m.precheck(ctx, cli, userHFModel(modelURL, mmprojURL, plat), modelURL, true, plat)
+func (m *ModelsIndex) PrecheckDownload(ctx context.Context, cli client.APIClient, modelURL, mmprojURL string, plat platform.Platform) (PrecheckResult, error) {
+	res, err := m.precheck(ctx, cli, userHFModel(modelURL, mmprojURL, plat), modelURL, true, plat)
 	if err != nil || !res.Installed {
-		return unlock, res, err
+		return res, err
 	}
 	recorded, err := m.listedFromSource(ctx, modelURL)
 	if err != nil {
-		unlock()
-		return func() {}, PrecheckResult{}, err
+		return PrecheckResult{}, err
 	}
 	if !recorded {
 		slog.Warn("model file found without a download record, downloading again", "url", modelURL)
 		res.Installed = false
 	}
-	return unlock, res, nil
+	return res, nil
 }
 
 // listedFromSource reports whether the listing holds a model recorded from url.
@@ -513,17 +498,10 @@ func (m *ModelsIndex) listedFromSource(ctx context.Context, url string) (bool, e
 	}), nil
 }
 
-func (m *ModelsIndex) precheck(ctx context.Context, cli client.APIClient, model AIModel, key string, isUser bool, plat platform.Platform) (func(), PrecheckResult, error) {
+func (m *ModelsIndex) precheck(ctx context.Context, cli client.APIClient, model AIModel, key string, isUser bool, plat platform.Platform) (PrecheckResult, error) {
 	var res PrecheckResult
-
-	// 1. lock
-	unlock, err := lockModel(m.locksDir, key)
-	if err != nil {
-		return func() {}, res, err
-	}
-	fail := func(err error) (func(), PrecheckResult, error) {
-		unlock()
-		return func() {}, PrecheckResult{}, err
+	fail := func(err error) (PrecheckResult, error) {
+		return PrecheckResult{}, err
 	}
 
 	handler, ok := m.Handlers.GetHandlerByID(model.Deployment.Handler)
@@ -532,10 +510,24 @@ func (m *ModelsIndex) precheck(ctx context.Context, cli client.APIClient, model 
 	}
 	vars := model.Deployment.VariablesForPlatform(plat.BoardName)
 
+	// 1. check → installed, or a download or delete holding the model's lock in its container
+	var inProgress bool
+	_ = m.Handlers.runAction(ctx, cli, handler, ActionCheck, vars, func(line string) {
+		switch checkLineStatus(line) {
+		case CheckInstalled:
+			res.Installed = true
+		case CheckInProgress:
+			inProgress = true
+		}
+	})
+	if inProgress {
+		return fail(fmt.Errorf("model %q: %w", key, ErrInstallInProgress))
+	}
+
 	// 2. info → size, or why the model cannot be fetched
 	var infoErr bool
 	var infoErrText string
-	err = m.Handlers.runAction(ctx, cli, handler, ActionInfo, vars, func(line string) {
+	err := m.Handlers.runAction(ctx, cli, handler, ActionInfo, vars, func(line string) {
 		size, text, isErr := parseInfoLine(line)
 		if isErr {
 			infoErr, infoErrText = true, text
@@ -558,20 +550,14 @@ func (m *ModelsIndex) precheck(ctx context.Context, cli client.APIClient, model 
 		return fail(fmt.Errorf("%w: %w", ErrInfoFailed, err))
 	}
 
-	_ = m.Handlers.runAction(ctx, cli, handler, ActionCheck, vars, func(line string) {
-		if installed, ok := checkLineInstalled(line); ok {
-			res.Installed = installed
-		}
-	})
-
-	// 4. disk
+	// 3. disk
 	if res.SizeBytes > 0 && !res.Installed {
 		if err := hasSufficientDiskSpace(m.modelsDir, res.SizeBytes); err != nil {
 			return fail(fmt.Errorf("%w: %w", ErrInsufficientStorage, err))
 		}
 	}
 
-	return unlock, res, nil
+	return res, nil
 }
 
 var (
@@ -605,12 +591,35 @@ func (m *ModelsIndex) Install(ctx context.Context, dockerClient command.Cli, id 
 		return AIModel{}, err
 	}
 
-	models, err := m.Refresh(context.WithoutCancel(ctx))
+	listed, err := m.listedAfterDownload(context.WithoutCancel(ctx), model.ID)
 	if err != nil {
-		return AIModel{}, fmt.Errorf("model %q downloaded, but the listing failed: %w", downloaded.ID, err)
+		return AIModel{}, fmt.Errorf("model %q downloaded, but the listing failed: %w", model.ID, err)
 	}
+	if listed != nil && listed.Status == InstalledStatus {
+		return *listed, nil
+	}
+	// A release's catalog can declare a model its image's catalog does not, so the index
+	// never lists it: the declaration describes it, and the download its size.
+	installed := *model
+	installed.Status = InstalledStatus
+	if downloaded != nil && downloaded.Size > 0 {
+		installed.SizeBytes = downloaded.Size
+	}
+	return installed, nil
+}
 
-	return models[slices.IndexFunc(models, func(v AIModel) bool { return v.ID == model.ID })], nil
+// listedAfterDownload answers id as the index lists it once a download has finished. The
+// handler rewrites the index before its container exits; when that rewrite failed, the
+// index does not list the model as installed, and one listing run rewrites it here.
+func (m *ModelsIndex) listedAfterDownload(ctx context.Context, id string) (*AIModel, error) {
+	listed, err := m.NewLookup().ByID(ctx, id)
+	if err == nil && listed != nil && listed.Status == InstalledStatus {
+		return listed, nil
+	}
+	if _, err := m.Refresh(ctx); err != nil {
+		return nil, err
+	}
+	return m.NewLookup().ByID(ctx, id)
 }
 
 // DownloadByURL fetches a model no models-list.yaml entry declares, named by a Hugging
@@ -619,7 +628,7 @@ func (m *ModelsIndex) Install(ctx context.Context, dockerClient command.Cli, id 
 // The id is not an input: the downloader makes it from the file that arrives, with the same
 // rule as the listing, and reports it on the stream. The id contains the repository
 // directory, so two owners with the same file name stay two models. The disk space check is
-// PrecheckDownload's: call it first, and hold its lock until this returns.
+// PrecheckDownload's: call it first.
 func (m *ModelsIndex) DownloadByURL(ctx context.Context, cli client.APIClient, modelURL, mmprojURL string, plat platform.Platform, publish func(e StreamMessage)) (AIModel, error) {
 
 	downloaded, err := m.runDownload(ctx, cli, userHFModel(modelURL, mmprojURL, plat), plat, publish)
@@ -630,15 +639,14 @@ func (m *ModelsIndex) DownloadByURL(ctx context.Context, cli client.APIClient, m
 		return AIModel{}, ErrNoModelReported
 	}
 
-	models, err := m.Refresh(context.WithoutCancel(ctx))
+	listed, err := m.listedAfterDownload(context.WithoutCancel(ctx), downloaded.ID)
 	if err != nil {
 		return AIModel{}, fmt.Errorf("model %q downloaded, but the listing failed: %w", downloaded.ID, err)
 	}
-	i := slices.IndexFunc(models, func(v AIModel) bool { return v.ID == downloaded.ID })
-	if i == -1 {
+	if listed == nil {
 		return AIModel{}, fmt.Errorf("model %q was downloaded but is not listed: %w", downloaded.ID, ErrNotListed)
 	}
-	return models[i], nil
+	return *listed, nil
 }
 
 // runDownload runs one handler's download action and keeps the model its stream names. An
@@ -657,10 +665,15 @@ func (m *ModelsIndex) runDownload(ctx context.Context, cli client.APIClient, mod
 	}
 
 	var downloaded *DownloadedModel
-	var reported bool
+	var reported, busy bool
 	var lastPercent helpers.LastPercent
 
 	lineParser := func(line string) {
+		if isBusyLine(line) {
+			// Answered as ErrInstallInProgress below, not as the handler's own error event.
+			busy = true
+			return
+		}
 		parseDownloadHandlerLine(line, func(e StreamMessage) {
 			if named := e.GetModel(); named != nil {
 				downloaded = named
@@ -676,12 +689,11 @@ func (m *ModelsIndex) runDownload(ctx context.Context, cli client.APIClient, mod
 	err := m.Handlers.downloadModel(ctx, cli, model, handler, plat, lineParser)
 
 	if ctx.Err() != nil {
-		if _, rerr := m.Refresh(context.WithoutCancel(ctx)); rerr != nil {
-			slog.Warn("download cancelled; refreshing the models listing failed", "model", model.ID, "err", rerr)
-		}
 		return nil, ctx.Err()
 	}
-
+	if busy {
+		return nil, fmt.Errorf("model %q: %w", model.ID, ErrInstallInProgress)
+	}
 	if reported {
 		return nil, errors.Join(ErrDownloadReported, err) // err may be nil: Join drops it
 	}
@@ -691,21 +703,23 @@ func (m *ModelsIndex) runDownload(ctx context.Context, cli client.APIClient, mod
 	return downloaded, nil
 }
 
+// Delete removes the model. A handler's delete action rewrites the index before it exits,
+// and refuses a model a download or delete is running on.
 func (m *ModelsIndex) Delete(ctx context.Context, dockerClient command.Cli, platform platform.Platform, model AIModel) error {
-	deleteKey := lockKey(model, platform.BoardName)
-	unlock, err := lockModel(m.locksDir, deleteKey)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-
 	if model.Deployment != nil && model.Deployment.Handler != "" {
 		// Internal model: run the delete action using the handler.
 		handler, ok := m.Handlers.GetHandlerByID(model.Deployment.Handler)
 		if !ok {
 			return fmt.Errorf("handler %q not found for model %q", model.Deployment.Handler, model.ID)
 		}
-		if err := m.Handlers.deleteInternalModel(ctx, dockerClient.Client(), model, handler, platform); err != nil {
+		var busy bool
+		err := m.Handlers.deleteInternalModel(ctx, dockerClient.Client(), model, handler, platform, func(line string) {
+			busy = busy || isBusyLine(line)
+		})
+		if busy {
+			return fmt.Errorf("model %q: %w", model.ID, ErrInstallInProgress)
+		}
+		if err != nil {
 			return fmt.Errorf("delete action: %w", err)
 		}
 	} else {
@@ -718,11 +732,6 @@ func (m *ModelsIndex) Delete(ctx context.Context, dockerClient command.Cli, plat
 			return fmt.Errorf("error removing model folder %s", model.ModelFolderPath.String())
 		}
 	}
-
-	_, err = m.Refresh(context.WithoutCancel(ctx))
-	if err != nil {
-		return fmt.Errorf("model %q deleted, but the listing failed: %w", model.ID, err)
-	}
 	return nil
 }
 
@@ -733,6 +742,8 @@ var (
 	ErrUnknownModel        = errors.New("model not in the internal model list")
 	ErrNoModelReported     = errors.New("download named no model: a newer models-downloader image is required")
 	ErrNotListed           = errors.New("model not listed")
+	// ErrInstallInProgress: the handler found the model's lock held by another download or delete.
+	ErrInstallInProgress = errors.New("an install or delete of this model is in progress")
 	// ErrDownloadReported ends a download whose handler reported an error event, which
 	// publish has already carried to the caller.
 	ErrDownloadReported = errors.New("the download reported an error")

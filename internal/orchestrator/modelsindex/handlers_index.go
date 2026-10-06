@@ -246,197 +246,32 @@ func (h *HandlersIndex) GetListingConfig() *ListingConfig {
 	return h.listing
 }
 
-type handlerModelListOutput struct {
-	Event  string              `json:"event"`
-	Models []handlerModelEntry `json:"models"`
-}
-
-type entryMetadata struct {
-	ModelID string            `json:"model_id"`
-	Handler string            `json:"handler"` // a handler id, e.g. "hf-handler"
-	Inputs  map[string]string `json:"inputs"`
-}
-
-type handlerModelEntry struct {
-	ID          string         `json:"id"`
-	Name        string         `json:"name"`
-	Handler     string         `json:"handler"`
-	Runtime     string         `json:"runtime"`
-	Publisher   string         `json:"model_publisher"`
-	Platform    string         `json:"platform"`
-	ModelType   string         `json:"model_type"`
-	Path        string         `json:"path"`
-	Installed   bool           `json:"installed"`
-	Downloading bool           `json:"downloading"`   // a download is in progress or was interrupted
-	ModelSizeMB *float64       `json:"model_size_mb"` // from yaml metadata
-	DiskSizeMB  *float64       `json:"disk_size_mb"`  // actual on-disk size, only when installed
-	ModelOrigin string         `json:"model_origin"`
-	Metadata    *entryMetadata `json:"download_metadata"`
-	Mmproj      string         `json:"mmproj"`
-}
-
-func (e handlerModelEntry) applyStat(m *AIModel) {
-	// The listing computes the two flags from one marker, and never reports both: a
-	// transfer in flight, or interrupted, is neither installed nor plain absent.
-	// TODO(#585): nothing clears the marker, so an abandoned download reads as in flight.
-	switch {
-	case e.Downloading:
-		m.Status = DownloadingStatus
-	case e.Installed:
-		m.Status = InstalledStatus
-	default:
-		m.Status = NotInstalledStatus
-	}
-	if e.Handler != "" {
-		m.Handler = e.Handler
-	}
-	if e.Metadata != nil {
-		m.setSourceURL(e.Metadata.Inputs["model_url"])
-	}
-	m.setMetadata(map[string]string{"runtime": e.Runtime, "publisher": e.Publisher})
-	if e.Installed && e.DiskSizeMB != nil && *e.DiskSizeMB > 0 {
-		m.SizeBytes = mibToBytes(*e.DiskSizeMB)
-	} else if e.ModelSizeMB != nil && *e.ModelSizeMB > 0 {
-		m.SizeBytes = mibToBytes(*e.ModelSizeMB)
-	}
-}
-
-// mibToBytes converts the listing's size_mb (MiB, rounded to 0.01) to bytes.
+// mibToBytes converts a size_mb (MiB, rounded to 0.01) to bytes.
 func mibToBytes(v float64) uint64 {
 	const mib = 1 << 20
 	return uint64(math.Round(v * mib))
 }
 
-const (
-	llmBrickID = "arduino:llm"
-	vlmBrickID = "arduino:vlm"
-)
-
-// bricksForVision says which brick can run a model nothing declares. A projection file is
-// what makes a GGUF multimodal, so a download that fetched one is a vision model.
-func bricksForVision(mmprojURL string) []BrickConfig {
-	if mmprojURL != "" {
-		return []BrickConfig{{ID: vlmBrickID}}
-	}
-	return []BrickConfig{{ID: llmBrickID}}
-}
-
-// setSourceURL records the link a model was downloaded from. The declaration wins: a
-// curated entry names its own source, and that reads the same before and after an install.
-// Into a copy, because a listed model shares its metadata map with its index entry.
-func (m *AIModel) setSourceURL(url string) {
-	if _, declared := m.Metadata["source-model-url"]; url == "" || declared {
-		return
-	}
-	metadata := make(map[string]string, len(m.Metadata)+1)
-	maps.Copy(metadata, m.Metadata)
-	metadata["source-model-url"] = url
-	m.Metadata = metadata
-}
-
-func (m *AIModel) setMetadata(values map[string]string) {
-	maps.DeleteFunc(values, func(_, v string) bool { return v == "" })
-	if len(values) == 0 {
-		return
-	}
-	metadata := make(map[string]string, len(m.Metadata)+len(values))
-	maps.Copy(metadata, m.Metadata)
-	maps.Copy(metadata, values)
-	m.Metadata = metadata
-}
-
-// The handler's own word for a model no models-list.yaml entry declares: the container's
-// ORIGIN_USER, and the only value here that matters.
-const handlerUserOrigin = "user"
-
-func (h *HandlersIndex) userDownloadModel(entry handlerModelEntry) (AIModel, bool) {
-	if entry.ModelOrigin != handlerUserOrigin {
-		return AIModel{}, false
-	}
-	md := entry.Metadata
-	if md == nil || md.Handler == "" || len(md.Inputs) == 0 {
-		// A legacy install: the record is what a re-download or a delete is driven by, so
-		// a current downloader fails the download rather than leave one unrecorded.
-		slog.Warn("skipping model with no download record", "model", entry.ID)
-		return AIModel{}, false
-	}
-	if md.ModelID != entry.ID {
-		// One record per repository directory, and it describes whichever quantization
-		// downloaded last: its variables would send a re-download at the wrong file.
-		slog.Warn("skipping model whose download record names another model",
-			"model", entry.ID, "record", md.ModelID)
-		return AIModel{}, false
-	}
-	if _, ok := h.GetHandlerByID(md.Handler); !ok {
-		slog.Warn("skipping model with unknown handler", "model", entry.ID, "handler", md.Handler)
-		return AIModel{}, false
-	}
-	return AIModel{
-		ID:           entry.ID,
-		Name:         entry.Name,
-		Handler:      md.Handler,
-		Preinstalled: false,
-		Origin:       UserOrigin,
-		Bricks:       bricksForVision(entry.Mmproj),
-		Deployment: &ModelDeployment{
-			Handler: md.Handler,
-			Variables: []map[string]PlatformDeploymentConfig{
-				{h.configEnv["BOARD_NAME"]: {Variables: md.Inputs}},
-			},
-		},
-	}, true
-}
-
-// getModelsInfo runs the listing and merges its state into models, in place. It appends
-// the user models the listing found and the catalog does not declare.
-func (h *HandlersIndex) getModelsInfo(ctx context.Context, cli client.APIClient, models []AIModel) ([]AIModel, error) {
-	if h == nil || h.listing == nil {
-		slog.Warn("handlers index or listing config is nil, cannot get model info")
-		return models, nil
-	}
-	entries, err := runListAction(ctx, cli, h.listing, h.configEnv)
-	if err != nil {
-		return nil, fmt.Errorf("cannot list models: %w", err)
-	}
-
-	// EI users model has stat already calculated in the dryIndex
-	for _, entry := range entries {
-		if i := slices.IndexFunc(models, func(m AIModel) bool { return m.ID == entry.ID }); i >= 0 {
-			entry.applyStat(&models[i])
-		} else if model, ok := h.userDownloadModel(entry); ok {
-			entry.applyStat(&model)
-			models = append(models, model)
-		}
-	}
-	return models, nil
-}
-
-func runListAction(ctx context.Context, cli client.APIClient, listing *ListingConfig, configEnv map[string]string) ([]handlerModelEntry, error) {
+// runListAction runs the listing container, which writes the index into the models dir.
+// What it prints is not read.
+func runListAction(ctx context.Context, cli client.APIClient, listing *ListingConfig, configEnv map[string]string) error {
 	slog.Debug("running list action", "image", listing.Image)
 
-	var buf, stderr bytes.Buffer
+	var stderr bytes.Buffer
 	start := time.Now()
 	err := dockerhelper.Run(ctx, cli, dockerhelper.RunOptions{
 		Image:  ResolveVars(listing.Image, configEnv),
 		Cmd:    listing.Command,
 		Binds:  ResolveVarsSlice(listing.Volumes, configEnv),
 		Env:    configEnv,
-		Stdout: &buf,
+		Stdout: io.Discard,
 		Stderr: &stderr,
 	})
 	slog.Debug("list action finished", "duration_s", time.Since(start).Seconds())
 	if err != nil {
-		return nil, fmt.Errorf("list action: %w: %s", err, stderr.String())
+		return fmt.Errorf("list action: %w: %s", err, stderr.String())
 	}
-
-	var output handlerModelListOutput
-	if err := json.Unmarshal(buf.Bytes(), &output); err != nil {
-		// The container's own words: without them a listing that prints nothing gives no
-		// reason at all.
-		return nil, fmt.Errorf("parsing list output: %w: %s", err, stderr.String())
-	}
-
-	return output.Models, nil
+	return nil
 }
 
 type MessageType string
@@ -524,8 +359,21 @@ type HandlerEvent struct {
 	SizeMB      *float64 `json:"size_mb"`     // stat, info, complete: MiB, 2 decimals
 	ModelID     string   `json:"model_id"`    // info: the id of what was downloaded
 	Downloading *bool    `json:"downloading"` // check: nil when the event does not say
+	Status      string   `json:"status"`      // check: installed, not_installed or in_progress
+	Code        string   `json:"code"`        // error: install_in_progress when the model's lock is held
 	Artifacts   []string `json:"artifacts"`
 }
+
+// The status a check action reports.
+const (
+	CheckInstalled    = "installed"
+	CheckNotInstalled = "not_installed"
+	CheckInProgress   = "in_progress"
+)
+
+// codeInstallInProgress is the error a download or delete reports when another one holds
+// the model's lock in its container.
+const codeInstallInProgress = "install_in_progress"
 
 func parseHandlerEvent(line string) (e HandlerEvent, ok bool) {
 	if err := json.Unmarshal([]byte(line), &e); err != nil {
@@ -587,9 +435,8 @@ type rawHandlersList struct {
 	Handlers []map[string]rawHandlerEntry `yaml:"handlers"`
 }
 
-func (h *HandlersIndex) deleteInternalModel(ctx context.Context, cli client.APIClient, model AIModel, handler ModelHandler, plat platform.Platform) error {
-	model.Deployment.VariablesForPlatform(plat.BoardName)
-	return h.runAction(ctx, cli, handler, ActionDelete, model.Deployment.VariablesForPlatform(plat.BoardName), nil)
+func (h *HandlersIndex) deleteInternalModel(ctx context.Context, cli client.APIClient, model AIModel, handler ModelHandler, plat platform.Platform, lineParser func(line string)) error {
+	return h.runAction(ctx, cli, handler, ActionDelete, model.Deployment.VariablesForPlatform(plat.BoardName), lineParser)
 }
 
 func (h *HandlersIndex) downloadModel(ctx context.Context, cli client.APIClient, model AIModel, handler ModelHandler, plat platform.Platform, lineParser func(line string)) error {
@@ -597,13 +444,18 @@ func (h *HandlersIndex) downloadModel(ctx context.Context, cli client.APIClient,
 	return h.runAction(ctx, cli, handler, ActionDownload, model.Deployment.VariablesForPlatform(plat.BoardName), lineParser)
 }
 
-// checkLineInstalled reads one line of a check action. ok is false for a line that does not
-// say: a check answers with the downloading flag, on an info event when the model is there
-// and on an error event when it is not.
-func checkLineInstalled(line string) (installed, ok bool) {
-	e, parsed := parseHandlerEvent(line)
-	if !parsed || e.Downloading == nil {
-		return false, false
+// checkLineStatus reads one line of a check action: its status, empty for a line that
+// does not say.
+func checkLineStatus(line string) string {
+	e, ok := parseHandlerEvent(line)
+	if !ok {
+		return ""
 	}
-	return !*e.Downloading && !e.IsError(), true
+	return e.Status
+}
+
+// isBusyLine reports whether a download or delete line says another one holds the model.
+func isBusyLine(line string) bool {
+	e, ok := parseHandlerEvent(line)
+	return ok && e.IsError() && e.Code == codeInstallInProgress
 }

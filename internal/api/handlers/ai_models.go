@@ -222,12 +222,11 @@ func HandleInstallModel(dockerClient command.Cli, modelsIndex *modelsindex.Model
 			return
 		}
 
-		unlock, res, err := modelsIndex.PrecheckInstall(r.Context(), dockerClient, id, plat)
+		res, err := modelsIndex.PrecheckInstall(r.Context(), dockerClient, id, plat)
 		if err != nil {
 			writeModelError(w, err) // 404 unknown / 409 in progress / 500 / 507
 			return
 		}
-		defer unlock()
 
 		sseStream, err := render.NewSSEStream(r.Context(), w)
 		if err != nil {
@@ -278,12 +277,11 @@ func HandleDownloadModel(dockerClient command.Cli, modelsIndex *modelsindex.Mode
 			return
 		}
 
-		unlock, res, err := modelsIndex.PrecheckDownload(r.Context(), dockerClient.Client(), modelURL, strings.TrimSpace(req.MmprojURL), plat)
+		res, err := modelsIndex.PrecheckDownload(r.Context(), dockerClient.Client(), modelURL, strings.TrimSpace(req.MmprojURL), plat)
 		if err != nil {
 			writeModelError(w, err) // 400/403/404/409/410/422/500/502/507
 			return
 		}
-		defer unlock()
 		if res.Installed {
 			// D1: a user download that is already there is a conflict, not a no-op.
 			render.EncodeResponse(w, http.StatusConflict, models.ErrorResponse{Details: "model already installed"})

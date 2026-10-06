@@ -73,13 +73,11 @@ func NewDaemonCmd(cfg config.Configuration, version string) *cobra.Command {
 					slog.Info("Default app started")
 				}
 			}()
-			// refresh the models index in the background
-			go func() {
-				modelsIndex := servicelocator.GetModelsIndex()
-				if _, err := modelsIndex.Refresh(cmd.Context()); err != nil {
-					slog.Error("initial models listing failed, will retry on first request", "err", err)
-				}
-			}()
+			// The listing writes the models index before the API answers. A failure is not
+			// fatal: the first request that finds no index runs it again.
+			if _, err := servicelocator.GetModelsIndex().Refresh(cmd.Context()); err != nil {
+				slog.Error("initial models listing failed, will retry on first request", "err", err)
+			}
 
 			httpHandler(cmd.Context(), cfg, daemonPort, version)
 		},

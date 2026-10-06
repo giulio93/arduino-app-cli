@@ -7,6 +7,7 @@ package modelsindex
 
 import (
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/arduino/go-paths-helper"
@@ -73,18 +74,18 @@ func TestClassifyInfoError(t *testing.T) {
 	}
 }
 
-// TestPrecheck drives precheck against a fake container: info answers first, then check.
+// TestPrecheck drives precheck against a fake container: check answers first, then info.
 func TestPrecheck(t *testing.T) {
 	const url = "llamacpp:org/repo:Q4_0"
 	plat := platform.Platform{BoardName: "ventunoq"}
-	// listing is what the listing container reports: none by default.
-	newIndex := func(t *testing.T, info, check string, checkExit int, listing ...string) (*ModelsIndex, *fakeDockerClient) {
+	// entries are what the index lists: piper only by default.
+	newIndex := func(t *testing.T, info, check string, checkExit int, entries ...string) (*ModelsIndex, *fakeDockerClient, *atomic.Int64) {
 		t.Helper()
+		var infos atomic.Int64
 		cli := newFakeDockerClient(func(_ string, cmd []string) (string, int) {
 			switch {
-			case len(cmd) > 0 && cmd[0] == listModelsCmd:
-				return listingWith(listing...), 0
 			case len(cmd) > 0 && strings.Contains(cmd[0], "_info.sh"):
+				infos.Add(1)
 				return info + "\n", 0
 			case len(cmd) > 0 && strings.Contains(cmd[0], "_checker.sh"):
 				return check + "\n", checkExit
@@ -92,88 +93,87 @@ func TestPrecheck(t *testing.T) {
 			t.Errorf("unexpected container %v", cmd)
 			return "", 1
 		})
+		modelsDir := paths.New(t.TempDir())
+		writeIndex(t, modelsDir, append([]string{piperEntry}, entries...)...)
 		dir := paths.New("testdata/with-handlers")
-		idx, err := Load(plat, dir, paths.New(t.TempDir()), dir.Join("custom-models"), cli, config.Configuration{})
+		idx, err := Load(plat, dir, modelsDir, dir.Join("custom-models"), cli, config.Configuration{})
 		require.NoError(t, err)
-		idx.locksDir = paths.New(t.TempDir())
-		return idx, cli
+		return idx, cli, &infos
 	}
-	const notInstalled = `{"event":"error","description":"Model does not exist","downloading":false}`
+	const notInstalled = `{"event":"error","description":"Model does not exist","downloading":false,"status":"not_installed"}`
 
 	t.Run("a model nobody has: proceed, with the size info reported", func(t *testing.T) {
-		idx, cli := newIndex(t, `{"event":"stat","size_bytes":1024}`, notInstalled, 1)
-		unlock, res, err := idx.PrecheckDownload(t.Context(), cli, url, "", plat)
+		idx, cli, _ := newIndex(t, `{"event":"stat","size_bytes":1024}`, notInstalled, 1)
+		res, err := idx.PrecheckDownload(t.Context(), cli, url, "", plat)
 		require.NoError(t, err)
-		defer unlock()
 		assert.Equal(t, PrecheckResult{SizeBytes: 1024}, res)
 	})
 
-	t.Run("info fails: classified, and the lock released", func(t *testing.T) {
-		idx, cli := newIndex(t, `{"event":"error","description":"Hugging Face repository 'org/repo' is gated: no"}`, notInstalled, 1)
-		_, _, err := idx.PrecheckDownload(t.Context(), cli, url, "", plat)
+	t.Run("a download or delete running on it: ErrInstallInProgress, the hub not asked", func(t *testing.T) {
+		idx, cli, infos := newIndex(t, `{"event":"stat","size_bytes":1024}`,
+			`{"event":"info","description":"Model downloading","downloading":true,"status":"in_progress"}`, 0)
+		_, err := idx.PrecheckDownload(t.Context(), cli, url, "", plat)
+		require.ErrorIs(t, err, ErrInstallInProgress)
+		assert.Zero(t, infos.Load())
+	})
+
+	t.Run("info fails: classified", func(t *testing.T) {
+		idx, cli, _ := newIndex(t, `{"event":"error","description":"Hugging Face repository 'org/repo' is gated: no"}`, notInstalled, 1)
+		_, err := idx.PrecheckDownload(t.Context(), cli, url, "", plat)
 		require.ErrorIs(t, err, ErrModelForbidden)
-		unlock, err := lockModel(idx.locksDir, url)
-		require.NoError(t, err, "a refused precheck must not keep the lock")
-		unlock()
 	})
 
 	t.Run("info fails for a curated model: always ErrInfoFailed", func(t *testing.T) {
-		idx, cli := newIndex(t, `{"event":"error","description":"Hugging Face repository 'org/repo' is gated: no"}`, notInstalled, 1)
-		_, _, err := idx.precheck(t.Context(), cli, userHFModel(url, "", plat), "curated-key", false, plat)
+		idx, cli, _ := newIndex(t, `{"event":"error","description":"Hugging Face repository 'org/repo' is gated: no"}`, notInstalled, 1)
+		_, err := idx.precheck(t.Context(), cli, userHFModel(url, "", plat), "curated-key", false, plat)
 		require.ErrorIs(t, err, ErrInfoFailed)
 		assert.NotErrorIs(t, err, ErrModelForbidden)
 	})
 
-	const exists = `{"event":"info","description":"Model exists","downloading":false}`
+	const exists = `{"event":"info","description":"Model exists","downloading":false,"status":"installed"}`
 
 	t.Run("on disk and recorded from this link: Installed", func(t *testing.T) {
 		// downloadedEntry's record names this very link as its model_url.
-		idx, cli := newIndex(t, `{"event":"stat","size_bytes":1024}`, exists, 0, downloadedEntry)
-		unlock, res, err := idx.PrecheckDownload(t.Context(), cli, url, "", plat)
+		idx, cli, _ := newIndex(t, `{"event":"stat","size_bytes":1024}`, exists, 0, downloadedEntry)
+		res, err := idx.PrecheckDownload(t.Context(), cli, url, "", plat)
 		require.NoError(t, err)
-		defer unlock()
 		assert.True(t, res.Installed)
 	})
 
 	t.Run("on disk but no record of it: a leftover, download again", func(t *testing.T) {
 		// Seen on a board: a download stopped after its file landed, before its record.
-		// check finds the file, the listing does not list it, so a 409 "already
+		// check finds the file, the index does not list it, so a 409 "already
 		// installed" would refuse a model nobody can see or delete.
-		idx, cli := newIndex(t, `{"event":"stat","size_bytes":1024}`, exists, 0)
-		unlock, res, err := idx.PrecheckDownload(t.Context(), cli, url, "", plat)
+		idx, cli, _ := newIndex(t, `{"event":"stat","size_bytes":1024}`, exists, 0)
+		res, err := idx.PrecheckDownload(t.Context(), cli, url, "", plat)
 		require.NoError(t, err)
-		defer unlock()
 		assert.False(t, res.Installed)
 	})
 
-	t.Run("a curated install is not confirmed against the listing", func(t *testing.T) {
+	t.Run("a curated install is not confirmed against the index", func(t *testing.T) {
 		// Curated models are listed from their declaration, record or not: check is enough.
-		idx, cli := newIndex(t, `{"event":"stat","size_bytes":1024}`, exists, 0)
-		unlock, res, err := idx.precheck(t.Context(), cli, userHFModel(url, "", plat), "curated-key", false, plat)
+		idx, cli, _ := newIndex(t, `{"event":"stat","size_bytes":1024}`, exists, 0)
+		res, err := idx.precheck(t.Context(), cli, userHFModel(url, "", plat), "curated-key", false, plat)
 		require.NoError(t, err)
-		defer unlock()
 		assert.True(t, res.Installed)
 	})
 
-	t.Run("a download marker under our lock is a leftover: proceed", func(t *testing.T) {
-		idx, cli := newIndex(t, `{"event":"stat","size_bytes":1024}`, `{"event":"info","description":"Model downloading","downloading":true}`, 0)
-		unlock, res, err := idx.PrecheckDownload(t.Context(), cli, url, "", plat)
+	t.Run("a download marker with the lock free is a leftover: proceed", func(t *testing.T) {
+		idx, cli, _ := newIndex(t, `{"event":"stat","size_bytes":1024}`,
+			`{"event":"info","description":"Model downloading","downloading":true,"status":"not_installed"}`, 0)
+		res, err := idx.PrecheckDownload(t.Context(), cli, url, "", plat)
 		require.NoError(t, err)
-		defer unlock()
 		assert.False(t, res.Installed)
 	})
 
-	t.Run("bigger than the free space: ErrInsufficientStorage, lock released", func(t *testing.T) {
-		idx, cli := newIndex(t, `{"event":"stat","size_bytes":1152921504606846976}`, notInstalled, 1) // 1 EiB
-		_, _, err := idx.PrecheckDownload(t.Context(), cli, url, "", plat)
+	t.Run("bigger than the free space: ErrInsufficientStorage", func(t *testing.T) {
+		idx, cli, _ := newIndex(t, `{"event":"stat","size_bytes":1152921504606846976}`, notInstalled, 1) // 1 EiB
+		_, err := idx.PrecheckDownload(t.Context(), cli, url, "", plat)
 		require.ErrorIs(t, err, ErrInsufficientStorage)
-		unlock, err := lockModel(idx.locksDir, url)
-		require.NoError(t, err)
-		unlock()
 	})
 
 	t.Run("a handler without info: size unknown, no error", func(t *testing.T) {
-		idx, cli := newIndex(t, "", notInstalled, 1)
+		idx, cli, _ := newIndex(t, "", notInstalled, 1)
 		hf, ok := idx.Handlers.GetHandlerByID(hfHandlerID)
 		require.True(t, ok)
 		hf.ID, hf.Actions.Info = "no-info-handler", nil
@@ -181,9 +181,8 @@ func TestPrecheck(t *testing.T) {
 		model := userHFModel(url, "", plat)
 		model.Deployment.Handler = hf.ID
 
-		unlock, res, err := idx.precheck(t.Context(), cli, model, url, true, plat)
+		res, err := idx.precheck(t.Context(), cli, model, url, true, plat)
 		require.NoError(t, err)
-		defer unlock()
 		assert.Zero(t, res.SizeBytes)
 	})
 }

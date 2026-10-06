@@ -226,119 +226,6 @@ handlers:
 	assert.Equal(t, []string{"test-registry/models-downloader:ai-hub", "test-registry/models-downloader:ei", "test-registry/models-downloader:hf", "test-registry/models-downloader:listing"}, images)
 }
 
-func testHandlersIndex() *HandlersIndex {
-	return &HandlersIndex{
-		handlers:  map[string]ModelHandler{"hf-handler": {ID: "hf-handler"}},
-		configEnv: map[string]string{"BOARD_NAME": "unoq"},
-	}
-}
-
-func TestUserDownloadModel(t *testing.T) {
-	inputs := map[string]string{
-		"models_repository": "llamacpp",
-		"model_directory":   "unsloth/Qwen3.5-0.8B-GGUF",
-		"model_url":         "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/blob/f4db1b3/Qwen3.5-0.8B-Q4_0.gguf",
-	}
-	entry := func(mutate func(*handlerModelEntry)) handlerModelEntry {
-		// An ad-hoc id is qualified by the repository directory the file landed in, so it
-		// cannot collide with a same-named GGUF from another owner.
-		e := handlerModelEntry{
-			ID:          "llamacpp:unsloth/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q4_0",
-			Name:        "unsloth/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q4_0",
-			Handler:     "llamacpp",
-			ModelOrigin: "user",
-			Metadata: &entryMetadata{
-				ModelID: "llamacpp:unsloth/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q4_0",
-				Handler: "hf-handler",
-				Inputs:  inputs,
-			},
-		}
-		if mutate != nil {
-			mutate(&e)
-		}
-		return e
-	}
-
-	t.Run("appends a model no models-list.yaml entry declares", func(t *testing.T) {
-		model, ok := testHandlersIndex().userDownloadModel(entry(nil))
-		require.True(t, ok)
-		assert.Equal(t, "llamacpp:unsloth/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q4_0", model.ID)
-		assert.Equal(t, "unsloth/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q4_0", model.Name)
-		assert.False(t, model.Preinstalled, "a built-in model cannot be deleted")
-		assert.Nil(t, model.ModelFolderPath, "the listing's path is a container path")
-		require.NotNil(t, model.Deployment)
-		// The handler id comes from the record: entry.Handler is a namespace.
-		assert.Equal(t, "hf-handler", model.Deployment.Handler)
-		assert.Equal(t, inputs, model.Deployment.VariablesForPlatform("unoq"))
-		assert.Equal(t, []BrickConfig{{ID: "arduino:llm"}}, model.Bricks)
-		// Nothing declares this model, and the listing reports no metadata for it.
-		assert.Nil(t, model.Metadata)
-	})
-
-	// models-downloader <= 0.12.0 writes neither field, so on an older image every
-	// undeclared entry falls into one of these two cases and nothing is appended.
-	t.Run("skips an entry the handler marks builtin", func(t *testing.T) {
-		_, ok := testHandlersIndex().userDownloadModel(entry(func(e *handlerModelEntry) {
-			e.ModelOrigin = "builtin"
-		}))
-		assert.False(t, ok)
-	})
-
-	t.Run("skips an entry with no download record", func(t *testing.T) {
-		_, ok := testHandlersIndex().userDownloadModel(entry(func(e *handlerModelEntry) {
-			e.Metadata = nil
-		}))
-		assert.False(t, ok)
-	})
-
-	t.Run("skips an entry whose record carries no inputs", func(t *testing.T) {
-		_, ok := testHandlersIndex().userDownloadModel(entry(func(e *handlerModelEntry) {
-			e.Metadata.Inputs = nil
-		}))
-		assert.False(t, ok)
-	})
-
-	// Two quantizations of one repository share a record naming the last downloaded.
-	t.Run("skips an entry whose record names another model", func(t *testing.T) {
-		_, ok := testHandlersIndex().userDownloadModel(entry(func(e *handlerModelEntry) {
-			e.Metadata.ModelID = "llamacpp:unsloth/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0"
-		}))
-		assert.False(t, ok)
-	})
-
-	t.Run("skips an entry naming a handler the index does not know", func(t *testing.T) {
-		_, ok := testHandlersIndex().userDownloadModel(entry(func(e *handlerModelEntry) {
-			e.Metadata.Handler = "not-a-handler"
-		}))
-		assert.False(t, ok)
-	})
-}
-
-func TestApplyStatusTo(t *testing.T) {
-	diskSize, yamlSize := 507.0, 480.0
-
-	t.Run("installed prefers the on-disk size", func(t *testing.T) {
-		var model AIModel
-		handlerModelEntry{Installed: true, DiskSizeMB: &diskSize, ModelSizeMB: &yamlSize}.applyStat(&model)
-		assert.Equal(t, InstalledStatus, model.Status)
-		assert.Equal(t, uint64(507*1024*1024), model.SizeBytes)
-	})
-
-	t.Run("not installed falls back to the declared size", func(t *testing.T) {
-		var model AIModel
-		handlerModelEntry{Installed: false, DiskSizeMB: &diskSize, ModelSizeMB: &yamlSize}.applyStat(&model)
-		assert.Equal(t, NotInstalledStatus, model.Status)
-		assert.Equal(t, uint64(480*1024*1024), model.SizeBytes)
-	})
-
-	t.Run("a transfer in flight is its own status", func(t *testing.T) {
-		var model AIModel
-		handlerModelEntry{Installed: false, Downloading: true}.applyStat(&model)
-		assert.Equal(t, DownloadingStatus, model.Status)
-		assert.Zero(t, model.SizeBytes)
-	})
-}
-
 func TestParseDownloadHandlerLineNamesTheModel(t *testing.T) {
 	t.Run("an info event carrying an id names the model", func(t *testing.T) {
 		var got []StreamMessage
@@ -430,24 +317,27 @@ handlers:
 	assert.Equal(t, []string{"${MODELS_PATH}/${models_repository}:/models"}, entry.Volumes)
 }
 
-func TestCheckLineInstalled(t *testing.T) {
+func TestCheckLineStatus(t *testing.T) {
 	tests := []struct {
-		name          string
-		line          string
-		installed, ok bool
+		name, line, status string
 	}{
-		{"installed", `{"event": "info", "description": "Model exists: x", "downloading": false}`, true, true},
-		{"partial download", `{"event": "info", "description": "Model downloading: x", "downloading": true}`, false, true},
-		{"does not exist", `{"event": "error", "description": "Model does not exist: x", "downloading": false}`, false, true},
-		{"info without downloading", `{"event": "info", "description": "x"}`, false, false},
-		{"empty", "", false, false},
-		{"not JSON", "docker: pull failed", false, false},
+		{"installed", `{"event": "info", "description": "Model exists: x", "downloading": false, "status": "installed"}`, CheckInstalled},
+		{"in progress", `{"event": "info", "description": "Model downloading: x", "downloading": true, "status": "in_progress"}`, CheckInProgress},
+		{"killed download", `{"event": "info", "description": "Model downloading: x", "downloading": true, "status": "not_installed"}`, CheckNotInstalled},
+		{"does not exist", `{"event": "error", "description": "Model does not exist: x", "status": "not_installed"}`, CheckNotInstalled},
+		{"no status", `{"event": "info", "description": "x", "downloading": false}`, ""},
+		{"not JSON", "docker: pull failed", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			installed, ok := checkLineInstalled(tt.line)
-			assert.Equal(t, tt.installed, installed)
-			assert.Equal(t, tt.ok, ok)
+			assert.Equal(t, tt.status, checkLineStatus(tt.line))
 		})
 	}
+}
+
+func TestIsBusyLine(t *testing.T) {
+	assert.True(t, isBusyLine(`{"event": "error", "code": "install_in_progress", "description": "busy"}`))
+	assert.False(t, isBusyLine(`{"event": "error", "description": "HTTP error"}`))
+	assert.False(t, isBusyLine(`{"event": "info", "code": "install_in_progress"}`))
+	assert.False(t, isBusyLine("not JSON"))
 }
