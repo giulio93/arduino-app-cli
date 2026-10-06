@@ -512,7 +512,8 @@ func (m *ModelsIndex) precheck(ctx context.Context, cli client.APIClient, model 
 	// 1. check → installed, or a download or delete holding the model's lock in its container
 	var inProgress bool
 	_ = m.Handlers.runAction(ctx, cli, handler, ActionCheck, vars, func(line string) {
-		switch checkLineStatus(line) {
+		e, _ := parseHandlerEvent(line) // a line that is not an event has no status
+		switch e.Status {
 		case CheckInstalled:
 			res.Installed = true
 		case CheckInProgress:
