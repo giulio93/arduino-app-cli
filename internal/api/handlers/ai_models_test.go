@@ -329,9 +329,9 @@ func TestDecodeRequestModel(t *testing.T) {
 	})
 }
 
-// TestHandleModelsListRefresh covers ?refresh: absent answers from the cache, true lists
-// again, anything else is refused. A custom model written behind the daemon's back is the
-// out-of-band change, found by the folder scan, so no container is needed.
+// TestHandleModelsListRefresh covers ?refresh: nothing is cached, so every list reads the
+// disk; true lists again, anything else is refused. A custom model written behind the
+// daemon's back is the out-of-band change, found by the folder scan, so no container is needed.
 func TestHandleModelsListRefresh(t *testing.T) {
 	customDir := paths.New(t.TempDir())
 	idx, err := modelsindex.Load(platform.GetPlatform(nil), paths.New("testdata"),
@@ -348,19 +348,15 @@ func TestHandleModelsListRefresh(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.NotContains(t, rec.Body.String(), `"id_decoded":"my-model-id"`)
 
-	// Written outside the API: the cache does not know it yet.
+	// Written outside the API.
 	src := paths.New("../../orchestrator/modelsindex/testdata/custom-models/my-custom-model")
 	require.NoError(t, src.CopyDirTo(customDir.Join("my-custom-model")))
 
-	for _, query := range []string{"", "?refresh=false"} {
+	for _, query := range []string{"", "?refresh=false", "?refresh=true"} {
 		rec = list(query)
 		require.Equal(t, http.StatusOK, rec.Code, query)
-		assert.NotContains(t, rec.Body.String(), `"id_decoded":"my-model-id"`, "%q answers from the cache", query)
+		assert.Contains(t, rec.Body.String(), `"id_decoded":"my-model-id"`, "%q reads the disk", query)
 	}
-
-	rec = list("?refresh=true")
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.Contains(t, rec.Body.String(), `"id_decoded":"my-model-id"`)
 
 	rec = list("?refresh=banana")
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -370,7 +366,7 @@ func TestHandleModelsListRefresh(t *testing.T) {
 // own code on the stream, so a client can tell "wait" from a failure.
 func TestDownloadStreamInstallInProgress(t *testing.T) {
 	sse := &fakeSSE{}
-	(&downloadStream{sse: sse}).sendError(fmt.Errorf("locking model %q: %w", "x", modelsindex.ErrInstallInProgress))
+	(&downloadStream{sse: sse}).sendError(fmt.Errorf("model %q: %w", "x", modelsindex.ErrInstallInProgress))
 	require.Len(t, sse.errors, 1)
 	assert.Equal(t, render.SSEErrCode("install_in_progress"), sse.errors[0].Code)
 }

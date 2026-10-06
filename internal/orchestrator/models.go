@@ -221,12 +221,6 @@ func InstallEIModel(ctx context.Context, bricksIndex *bricksindex.BricksIndex, m
 	}
 
 	id := fmt.Sprintf("ei-model-%d-%d", projectID, impulseID)
-	unlock, err := modelsIndex.LockModel(id)
-	if err != nil {
-		return modelsindex.AIModel{}, err
-	}
-	defer unlock()
-
 	err = isModelInUse(ctx, modelsIndex, dockerClient, id)
 	if err != nil {
 		return modelsindex.AIModel{}, fmt.Errorf("cannot install EI model: %w", err)
@@ -305,16 +299,15 @@ func InstallEIModel(ctx context.Context, bricksIndex *bricksindex.BricksIndex, m
 		return modelsindex.AIModel{}, err
 	}
 
-	models, err := modelsIndex.Refresh(context.WithoutCancel(ctx))
+	// Edge Impulse custom models are scanned on every lookup, so this one is listed now.
+	listed, err := modelsIndex.NewLookup().ByID(context.WithoutCancel(ctx), aimodel.ModelDescriptor.ID)
 	if err != nil {
 		return modelsindex.AIModel{}, fmt.Errorf("model %q downloaded, but the listing failed: %w", aimodel.ModelDescriptor.ID, err)
 	}
-	i := slices.IndexFunc(models, func(v modelsindex.AIModel) bool { return v.ID == aimodel.ModelDescriptor.ID })
-	if i == -1 {
+	if listed == nil {
 		return modelsindex.AIModel{}, fmt.Errorf("model %q was downloaded but is not listed", aimodel.ModelDescriptor.ID)
 	}
-
-	return models[i], nil
+	return *listed, nil
 }
 
 func buildBrickConfigForEIModel(bricksIndex *bricksindex.BricksIndex, category *edgeimpulse.ProjectCategory, impulse []edgeimpulse.ImpulseLearnBlock, edgeModelsDir *paths.Path, blobModelsDir *paths.Path) ([]custommodel.BrickConfig, error) {

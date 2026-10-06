@@ -736,7 +736,7 @@ type GetAIModelsParams struct {
 	// Bricks Filter models by bricks. If not specified, all models are returned.
 	Bricks *string `form:"bricks,omitempty" json:"bricks,omitempty"`
 
-	// Refresh Run the models listing again instead of answering from the cache. Use after changing model files outside the API. Defaults to false.
+	// Refresh Run the models listing again, which rewrites the models index, instead of reading the index as it is. Use after changing model files outside the API. Defaults to false.
 	Refresh *bool `form:"refresh,omitempty" json:"refresh,omitempty"`
 }
 

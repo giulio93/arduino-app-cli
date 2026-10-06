@@ -9,7 +9,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -18,7 +17,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/docker/cli/cli/command"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/jsonstream"
@@ -66,6 +67,15 @@ func newFakeDockerClient(runFunc func(image string, cmd []string) (stdout string
 		pending: make(map[string]*pendingContainer),
 	}
 }
+
+// fakeCommandCli is the docker command.Cli the callers that take one are given: they only
+// read its client.
+type fakeCommandCli struct {
+	command.Cli
+	cli client.APIClient
+}
+
+func (f fakeCommandCli) Client() client.APIClient { return f.cli }
 
 func newFakeDockerClientWithEnv(runFunc func(image string, cmd, env []string) (stdout string, exitCode int)) *fakeDockerClient {
 	return &fakeDockerClient{
@@ -172,113 +182,117 @@ func writeStdoutFrame(w io.Writer, payload string) {
 // listModelsCmd is the listing container's command, as testdata/with-handlers declares it.
 const listModelsCmd = "/app/list_models.sh"
 
-// listingWith wraps model entries in the envelope the listing command prints.
-func listingWith(entries ...string) string {
-	return `{"event":"info","models":[` + strings.Join(entries, ",") + `]}`
+// Index entries as the listing writes them, one {id: model} map each.
+const (
+	piperEntry        = `piper-tts-en: {name: Piper TTS, bricks: [{id: "arduino:tts"}], deployment: {handler: ai-hub-handler, pre-loaded: true}, status: installed, size_bytes: 48234496, origin: curated}`
+	efficientNetEntry = `"ei:efficientnet-b4": {name: EfficientNet-B4, bricks: [{id: "arduino:image_classification"}], deployment: {handler: ei-handler, platforms: [{ventunoq: {variables: {model_name: efficientnet-b4.eim}}}]}, metadata: {model_size_mb: 89, source: edgeimpulse, runtime: edge-impulse-sdk}, status: not-installed, size_bytes: 93323264, origin: curated}`
+	// downloadedEntry is the user model the downloads below write: its deployment is the
+	// record's inputs, so the link it came from is its model_url.
+	downloadedEntry = `"llamacpp:org/repo/m-Q4_0": {name: org/repo/m-Q4_0, handler: hf-handler, bricks: [{id: "arduino:llm"}], deployment: {handler: hf-handler, platforms: [{ventunoq: {variables: {models_repository: llamacpp, model_url: "llamacpp:org/repo:Q4_0"}}}]}, metadata: {source-model-url: "llamacpp:org/repo:Q4_0"}, status: installed, size_bytes: 1048576, folder: llamacpp/org/repo, origin: user}`
+)
+
+// writeIndex writes the index a listing would, holding entries.
+func writeIndex(t *testing.T, modelsDir *paths.Path, entries ...string) {
+	t.Helper()
+	doc := "models: []\n"
+	if len(entries) > 0 {
+		doc = "models:\n  - " + strings.Join(entries, "\n  - ") + "\n"
+	}
+	require.NoError(t, modelsDir.Join(modelsIndexFileName).WriteFile([]byte(doc)))
+}
+
+// indexedClient is a docker client whose listing container writes entries into the index
+// of modelsDir. Any other container is answered by other; listings counts the listing runs.
+func indexedClient(t *testing.T, modelsDir *paths.Path, entries []string, other func(cmd []string) (string, int)) (*fakeDockerClient, *atomic.Int64) {
+	var listings atomic.Int64
+	cli := newFakeDockerClient(func(_ string, cmd []string) (string, int) {
+		if len(cmd) > 0 && cmd[0] == listModelsCmd {
+			listings.Add(1)
+			writeIndex(t, modelsDir, entries...)
+			return "", 0
+		}
+		if other == nil {
+			t.Errorf("unexpected container %v", cmd)
+			return "", 1
+		}
+		return other(cmd)
+	})
+	return cli, &listings
+}
+
+func loadTestIndex(t *testing.T, modelsDir *paths.Path, cli client.APIClient) *ModelsIndex {
+	t.Helper()
+	dir := paths.New("testdata/with-handlers")
+	idx, err := Load(platform.Platform{BoardName: "ventunoq"}, dir, modelsDir, dir.Join("custom-models"), cli, config.Configuration{})
+	require.NoError(t, err)
+	return idx
 }
 
 func TestGetModelByID_WithDockerMock(t *testing.T) {
-	loadHandlersTestIndex := func(t *testing.T, dockerCli client.APIClient) *ModelsIndex {
-		t.Helper()
-		dir := paths.New("testdata/with-handlers")
-		customModelsDir := dir.Join("custom-models")
-		idx, err := Load(platform.Platform{BoardName: "ventunoq"}, dir, paths.New("not-existing-path"), customModelsDir, dockerCli, config.Configuration{})
-		require.NoError(t, err)
-		return idx
-	}
-
 	t.Run("the custom modeldir volume is not resolved at load time", func(t *testing.T) {
-		cli := newFakeDockerClient(func(image string, cmd []string) (string, int) {
-			return "", 0
-		})
-		idx := loadHandlersTestIndex(t, cli)
+		cli := newFakeDockerClient(func(image string, cmd []string) (string, int) { return "", 0 })
+		idx := loadTestIndex(t, paths.New(t.TempDir()), cli)
 
 		require.Equal(t, []string{"${MODELS_PATH}:/models"}, idx.Handlers.listing.Volumes)
 		h, ok := idx.Handlers.GetHandlerByID("ai-hub-handler")
 		require.True(t, ok)
 		require.Equal(t, []string{"${MODELS_PATH:-/var/lib/arduino-app-cli/models}:/models"}, h.Volumes)
-
 	})
 
-	t.Run("piper-tts-en is pre-loaded: state comes from the listing", func(t *testing.T) {
-		cli := newFakeDockerClient(func(image string, cmd []string) (string, int) {
-			return listingWith(`{"id":"piper-tts-en","installed":true,"model_size_mb":46}`), 0
-		})
-		idx := loadHandlersTestIndex(t, cli)
+	t.Run("state and size come from the index", func(t *testing.T) {
+		modelsDir := paths.New(t.TempDir())
+		cli, _ := indexedClient(t, modelsDir, []string{piperEntry, efficientNetEntry}, nil)
+		idx := loadTestIndex(t, modelsDir, cli)
 
-		model, err := idx.NewLookup().ByID(t.Context(), "piper-tts-en")
+		piper, err := idx.NewLookup().ByID(t.Context(), "piper-tts-en")
 		require.NoError(t, err)
-		require.NotNil(t, model)
-		assert.Equal(t, InstalledStatus, model.Status)
-		assert.Equal(t, uint64(46*1024*1024), model.SizeBytes)
-	})
+		require.NotNil(t, piper)
+		assert.Equal(t, InstalledStatus, piper.Status)
+		assert.Equal(t, uint64(48234496), piper.SizeBytes)
+		assert.True(t, piper.Preinstalled, "pre-loaded by its declaration")
+		assert.Equal(t, CuratedOrigin, piper.Origin)
 
-	t.Run("piper-tts-en is pre-loaded: files missing reads not installed", func(t *testing.T) {
-		cli := newFakeDockerClient(func(image string, cmd []string) (string, int) {
-			return listingWith(`{"id":"piper-tts-en","installed":false,"model_size_mb":46}`), 0
-		})
-		idx := loadHandlersTestIndex(t, cli)
-
-		model, err := idx.NewLookup().ByID(t.Context(), "piper-tts-en")
+		ei, err := idx.NewLookup().ByID(t.Context(), "ei:efficientnet-b4")
 		require.NoError(t, err)
-		require.NotNil(t, model)
-		assert.Equal(t, NotInstalledStatus, model.Status)
+		require.NotNil(t, ei)
+		assert.Equal(t, NotInstalledStatus, ei.Status)
+		assert.Equal(t, uint64(93323264), ei.SizeBytes)
+		assert.False(t, ei.Preinstalled)
 	})
 
-	t.Run("ei:efficientnet-b4 not installed: the listing reports it absent", func(t *testing.T) {
-		cli := newFakeDockerClient(func(image string, cmd []string) (string, int) {
-			return listingWith(`{"id":"ei:efficientnet-b4","installed":false,"model_size_mb":89}`), 0
-		})
-		idx := loadHandlersTestIndex(t, cli)
-
-		model, err := idx.NewLookup().ByID(t.Context(), "ei:efficientnet-b4")
-		require.NoError(t, err)
-		require.NotNil(t, model)
-		assert.Equal(t, NotInstalledStatus, model.Status)
-		assert.Equal(t, uint64(89*1024*1024), model.SizeBytes)
-	})
-
-	t.Run("ei:efficientnet-b4 installed: size falls back to the declared one", func(t *testing.T) {
-		cli := newFakeDockerClient(func(image string, cmd []string) (string, int) {
-			return listingWith(`{"id":"ei:efficientnet-b4","installed":true,"model_size_mb":89}`), 0
-		})
-		idx := loadHandlersTestIndex(t, cli)
-
-		model, err := idx.NewLookup().ByID(t.Context(), "ei:efficientnet-b4")
-		require.NoError(t, err)
-		require.NotNil(t, model)
-		assert.Equal(t, InstalledStatus, model.Status)
-		assert.Equal(t, uint64(89*1024*1024), model.SizeBytes)
-	})
-
-	t.Run("listing fails: returns an error rather than a declared status", func(t *testing.T) {
-		cli := newFakeDockerClient(func(image string, cmd []string) (string, int) {
-			return "", 1
-		})
-		idx := loadHandlersTestIndex(t, cli)
+	t.Run("listing fails with no index: an error rather than a declared status", func(t *testing.T) {
+		cli := newFakeDockerClient(func(image string, cmd []string) (string, int) { return "", 1 })
+		idx := loadTestIndex(t, paths.New(t.TempDir()), cli)
 
 		_, err := idx.NewLookup().ByID(t.Context(), "ei:efficientnet-b4")
 		require.Error(t, err)
-	})
-
-	t.Run("listing fails: an id nothing declares is an error too", func(t *testing.T) {
-		// Only the listing can find an undeclared model, so a listing that did not run cannot
-		// say it is absent: a 404 here would hide the broken listing.
-		cli := newFakeDockerClient(func(image string, cmd []string) (string, int) {
-			return "", 1
-		})
-		idx := loadHandlersTestIndex(t, cli)
-
-		_, err := idx.NewLookup().ByID(t.Context(), "no-such-model-id")
+		// Only the index lists undeclared models, so without it no id can be called absent.
+		_, err = idx.NewLookup().ByID(t.Context(), "no-such-model-id")
 		require.Error(t, err)
 	})
 
+	t.Run("a listing that writes nothing is an error", func(t *testing.T) {
+		cli := newFakeDockerClient(func(image string, cmd []string) (string, int) { return "", 0 })
+		idx := loadTestIndex(t, paths.New(t.TempDir()), cli)
+
+		_, err := idx.NewLookup().All(t.Context())
+		require.ErrorContains(t, err, modelsIndexFileName)
+	})
+
+	t.Run("an empty index is an empty catalog", func(t *testing.T) {
+		modelsDir := paths.New(t.TempDir())
+		writeIndex(t, modelsDir)
+		idx := loadTestIndex(t, modelsDir, newFakeDockerClient(nil))
+
+		_, err := idx.NewLookup().All(t.Context())
+		require.ErrorIs(t, err, ErrEmptyCatalog)
+	})
+
 	t.Run("ei-model-990187-1 custom model: installed, found by the folder scan", func(t *testing.T) {
-		// The listing runs, but knows nothing of custom models: the folder scan finds it.
-		cli := newFakeDockerClient(func(image string, cmd []string) (string, int) {
-			return listingWith(), 0
-		})
-		idx := loadHandlersTestIndex(t, cli)
+		// The index knows nothing of custom models: the folder scan finds it.
+		modelsDir := paths.New(t.TempDir())
+		writeIndex(t, modelsDir, piperEntry)
+		idx := loadTestIndex(t, modelsDir, newFakeDockerClient(nil))
 
 		model, err := idx.NewLookup().ByID(t.Context(), "ei-model-990187-1")
 		require.NoError(t, err)
@@ -287,134 +301,41 @@ func TestGetModelByID_WithDockerMock(t *testing.T) {
 	})
 }
 
-// TestGetModelsMergesTheListing covers what the listing adds to a model the index knows:
-// the transfer in flight, and the link the record kept.
-func TestGetModelsMergesTheListing(t *testing.T) {
-	t.Run("a transfer in flight is its own status", func(t *testing.T) {
-		const listingOutput = `{"event":"info","models":[
-			{"id":"ei:efficientnet-b4","name":"EfficientNet-B4","handler":"ei-handler","installed":false,"downloading":true,"model_size_mb":89},
-			{"id":"piper-tts-en","name":"Piper TTS","handler":"ai-hub-handler","installed":true,"model_size_mb":46}
-		]}`
+// TestIndexDescribesTheModel covers what the index carries beyond the status: a user
+// model nothing declares is described by it alone.
+func TestIndexDescribesTheModel(t *testing.T) {
+	modelsDir := paths.New(t.TempDir())
+	writeIndex(t, modelsDir, efficientNetEntry, downloadedEntry,
+		`"ei:other": {name: Other, deployment: {handler: ei-handler}, status: downloading, origin: curated}`)
+	idx := loadTestIndex(t, modelsDir, newFakeDockerClient(nil))
 
-		cli := newFakeDockerClient(func(_ string, cmd []string) (string, int) {
-			if len(cmd) > 0 && cmd[0] == listModelsCmd {
-				return listingOutput, 0
-			}
-			return "", 0
-		})
+	user, err := idx.NewLookup().ByID(t.Context(), "llamacpp:org/repo/m-Q4_0")
+	require.NoError(t, err)
+	require.NotNil(t, user)
+	assert.Equal(t, UserOrigin, user.Origin)
+	assert.Equal(t, "hf-handler", user.Handler)
+	assert.Equal(t, []BrickConfig{{ID: "arduino:llm"}}, user.Bricks)
+	assert.Equal(t, map[string]string{"source-model-url": "llamacpp:org/repo:Q4_0"}, user.Metadata)
+	assert.Equal(t, "llamacpp:org/repo:Q4_0", user.Deployment.VariablesForPlatform("ventunoq")["model_url"],
+		"a delete of it runs with the link it was downloaded from")
+	assert.Equal(t, modelsDir.Join("llamacpp", "org", "repo"), user.ModelFolderPath)
+	assert.False(t, user.Preinstalled)
 
-		dir := paths.New("testdata/with-handlers")
-		idx, err := Load(platform.Platform{BoardName: "ventunoq"}, dir, paths.New("not-existing-path"), dir.Join("custom-models"), cli, config.Configuration{})
-		require.NoError(t, err)
+	ei, err := idx.NewLookup().ByID(t.Context(), "ei:efficientnet-b4")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"model_size_mb": "89", "source": "edgeimpulse", "runtime": "edge-impulse-sdk"}, ei.Metadata)
 
-		models, err := idx.NewLookup().All(t.Context())
-		require.NoError(t, err)
-		byID := func(id string) *AIModel {
-			t.Helper()
-			for i := range models {
-				if models[i].ID == id {
-					return &models[i]
-				}
-			}
-			t.Fatalf("model %q missing from the index", id)
-			return nil
-		}
-
-		downloading := byID("ei:efficientnet-b4")
-		assert.Equal(t, DownloadingStatus, downloading.Status, "a transfer in flight is its own status")
-
-		// The field is absent for this entry: it must not inherit the neighbor's.
-		installed := byID("piper-tts-en")
-		assert.Equal(t, InstalledStatus, installed.Status)
-	})
-
-	t.Run("the record carries the link a model was downloaded from", func(t *testing.T) {
-		const listingOutput = `{"event":"info","models":[
-			{"id":"llamacpp:ggml-org/SmolVLM-256M-Instruct-GGUF/SmolVLM-256M-Instruct-Q8_0",
-			 "name":"ggml-org/SmolVLM-256M-Instruct-GGUF/SmolVLM-256M-Instruct-Q8_0",
-			 "handler":"hf-handler","runtime":"llamacpp","model_publisher":"ggml-org",
-			 "model_origin":"user","installed":true,
-			 "mmproj":"/models/llamacpp/ggml-org/SmolVLM-256M-Instruct-GGUF/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf",
-			 "download_metadata":{
-				"downloaded_at":"2026-09-02T09:04:32Z",
-				"handler":"hf-handler",
-				"model_id":"llamacpp:ggml-org/SmolVLM-256M-Instruct-GGUF/SmolVLM-256M-Instruct-Q8_0",
-				"model_origin":"user",
-				"inputs":{
-					"models_repository":"llamacpp",
-					"model_directory":"ggml-org/SmolVLM-256M-Instruct-GGUF",
-					"model_url":"https://huggingface.co/ggml-org/SmolVLM-256M-Instruct-GGUF/resolve/main/SmolVLM-256M-Instruct-Q8_0.gguf"}}},
-			{"id":"ei:efficientnet-b4","name":"EfficientNet-B4","handler":"ei-handler","installed":true,
-			 "runtime":"edge-impulse-sdk","model_publisher":"qualcomm-ai-hub",
-			 "download_metadata":{
-				"downloaded_at":"2026-08-30T11:02:00Z",
-				"handler":"ei-handler",
-				"model_id":"ei:efficientnet-b4",
-				"model_origin":"builtin",
-				"inputs":{"ei_project_id":"948887","ei_impulse_id":"4"}}}
-		]}`
-
-		cli := newFakeDockerClient(func(_ string, cmd []string) (string, int) {
-			if len(cmd) > 0 && cmd[0] == listModelsCmd {
-				return listingOutput, 0
-			}
-			return "", 0
-		})
-
-		dir := paths.New("testdata/with-handlers")
-		idx, err := Load(platform.Platform{BoardName: "ventunoq"}, dir, paths.New("not-existing-path"), dir.Join("custom-models"), cli, config.Configuration{})
-		require.NoError(t, err)
-
-		models, err := idx.NewLookup().All(t.Context())
-		require.NoError(t, err)
-		byID := func(id string) *AIModel {
-			t.Helper()
-			for i := range models {
-				if models[i].ID == id {
-					return &models[i]
-				}
-			}
-			t.Fatalf("model %q missing from the index", id)
-			return nil
-		}
-
-		// The listing reports a projection file, so the vlm brick is the one that can run it.
-		// Nothing declares this model, so its bricks are derived from what was downloaded.
-		vision := byID("llamacpp:ggml-org/SmolVLM-256M-Instruct-GGUF/SmolVLM-256M-Instruct-Q8_0")
-		assert.Equal(t, []BrickConfig{{ID: vlmBrickID}}, vision.Bricks)
-		assert.Equal(t, map[string]string{
-			"source-model-url": "https://huggingface.co/ggml-org/SmolVLM-256M-Instruct-GGUF/resolve/main/SmolVLM-256M-Instruct-Q8_0.gguf",
-			"runtime":          "llamacpp",
-			"publisher":        "ggml-org",
-		}, vision.Metadata, "the link comes from the record the listing carries")
-
-		// This record names project and impulse numbers, not a link, so no link is added.
-		assert.Equal(t, map[string]string{
-			"model_size_mb": "89",
-			"source":        "edgeimpulse",
-			"runtime":       "edge-impulse-sdk",
-			"publisher":     "qualcomm-ai-hub",
-		}, byID("ei:efficientnet-b4").Metadata)
-
-		known, ok := idx.known("ei:efficientnet-b4")
-		require.True(t, ok)
-		assert.Equal(t, map[string]string{"model_size_mb": "89", "source": "edgeimpulse"}, known.Metadata,
-			"the index's own entry stays as declared")
-	})
+	inFlight, err := idx.NewLookup().ByID(t.Context(), "ei:other")
+	require.NoError(t, err)
+	assert.Equal(t, DownloadingStatus, inFlight.Status)
 }
 
 // TestModelForBrick covers the write path: the lookup answers on plain ids, and reports
 // the model under its own id so the caller stores that.
 func TestModelForBrick(t *testing.T) {
-	cli := newFakeDockerClient(func(_ string, cmd []string) (string, int) {
-		if len(cmd) > 0 && cmd[0] == listModelsCmd {
-			return listingWith(`{"id":"ei:efficientnet-b4","installed":true,"model_size_mb":89}`), 0
-		}
-		return "", 0
-	})
-	dir := paths.New("testdata/with-handlers")
-	idx, err := Load(platform.Platform{BoardName: "ventunoq"}, dir, paths.New("not-existing-path"), dir.Join("custom-models"), cli, config.Configuration{})
-	require.NoError(t, err)
+	modelsDir := paths.New(t.TempDir())
+	writeIndex(t, modelsDir, efficientNetEntry)
+	idx := loadTestIndex(t, modelsDir, newFakeDockerClient(nil))
 
 	model, err := idx.NewLookup().ModelForBrick(t.Context(), "ei:efficientnet-b4", "arduino:image_classification")
 	require.NoError(t, err)
@@ -427,84 +348,56 @@ func TestModelForBrick(t *testing.T) {
 	assert.Nil(t, other)
 }
 
-// TestLookupRunsOneListing pins the reason Lookup exists: callers that query per brick
-// would otherwise pay a container start each, which on a board is seconds per brick.
-func TestLookupRunsOneListing(t *testing.T) {
-	var listings atomic.Int64
-	newIndex := func(t *testing.T) *ModelsIndex {
-		t.Helper()
-		cli := newFakeDockerClient(func(_ string, cmd []string) (string, int) {
-			if len(cmd) > 0 && cmd[0] == listModelsCmd {
-				listings.Add(1)
-			}
-			return listingWith(`{"id":"ei:efficientnet-b4","installed":true,"model_size_mb":89}`), 0
-		})
-		dir := paths.New("testdata/with-handlers")
-		idx, err := Load(platform.Platform{BoardName: "ventunoq"}, dir, paths.New("not-existing-path"), dir.Join("custom-models"), cli, config.Configuration{})
+// TestLookupReadsTheIndex pins when a listing container runs: only when no index exists
+// yet, and on Refresh. Everything else reads the file.
+func TestLookupReadsTheIndex(t *testing.T) {
+	t.Run("no index: the first lookup runs one listing, later ones read the file", func(t *testing.T) {
+		modelsDir := paths.New(t.TempDir())
+		cli, listings := indexedClient(t, modelsDir, []string{piperEntry, efficientNetEntry}, nil)
+		idx := loadTestIndex(t, modelsDir, cli)
+
+		lookup := idx.NewLookup()
+		_, err := lookup.ByID(t.Context(), "ei:efficientnet-b4")
 		require.NoError(t, err)
-		return idx
-	}
-
-	t.Run("three queries share one listing", func(t *testing.T) {
-		listings.Store(0)
-		lookup := newIndex(t).NewLookup()
-
-		model, err := lookup.ByID(t.Context(), "ei:efficientnet-b4")
-		require.NoError(t, err)
-		require.NotNil(t, model)
-
 		_, err = lookup.ByBrick(t.Context(), "arduino:image_classification")
 		require.NoError(t, err)
-
-		supported, err := lookup.ModelForBrick(t.Context(), "ei:efficientnet-b4", "arduino:image_classification")
+		_, err = idx.NewLookup().ByID(t.Context(), "piper-tts-en")
 		require.NoError(t, err)
-		assert.NotNil(t, supported)
 
 		assert.Equal(t, int64(1), listings.Load())
 	})
 
-	t.Run("a pre-loaded model is listed like any other", func(t *testing.T) {
-		listings.Store(0)
-		lookup := newIndex(t).NewLookup()
+	t.Run("an index written meanwhile is what the next lookup reads", func(t *testing.T) {
+		modelsDir := paths.New(t.TempDir())
+		writeIndex(t, modelsDir, efficientNetEntry)
+		cli, listings := indexedClient(t, modelsDir, nil, nil)
+		idx := loadTestIndex(t, modelsDir, cli)
 
-		model, err := lookup.ByID(t.Context(), "piper-tts-en")
+		before, err := idx.NewLookup().ByID(t.Context(), "ei:efficientnet-b4")
 		require.NoError(t, err)
-		require.NotNil(t, model)
+		assert.Equal(t, NotInstalledStatus, before.Status)
 
-		supported, err := lookup.ModelForBrick(t.Context(), "piper-tts-en", "arduino:tts")
+		// What a handler does before its container exits.
+		writeIndex(t, modelsDir, strings.Replace(efficientNetEntry, "status: not-installed", "status: installed", 1))
+		after, err := idx.NewLookup().ByID(t.Context(), "ei:efficientnet-b4")
 		require.NoError(t, err)
-		assert.NotNil(t, supported)
-
-		assert.Equal(t, int64(1), listings.Load())
-	})
-
-	t.Run("new Lookups share the cached listing", func(t *testing.T) {
-		listings.Store(0)
-		idx := newIndex(t)
-
-		_, err := idx.NewLookup().ByID(t.Context(), "ei:efficientnet-b4")
-		require.NoError(t, err)
-		_, err = idx.NewLookup().ByBrick(t.Context(), "arduino:image_classification")
-		require.NoError(t, err)
-
-		assert.Equal(t, int64(1), listings.Load())
+		assert.Equal(t, InstalledStatus, after.Status)
+		assert.Zero(t, listings.Load())
 	})
 
 	t.Run("Refresh runs the listing again", func(t *testing.T) {
-		listings.Store(0)
-		idx := newIndex(t)
+		modelsDir := paths.New(t.TempDir())
+		writeIndex(t, modelsDir, efficientNetEntry)
+		cli, listings := indexedClient(t, modelsDir, []string{piperEntry}, nil)
+		idx := loadTestIndex(t, modelsDir, cli)
 
-		_, err := idx.NewLookup().ByID(t.Context(), "ei:efficientnet-b4")
+		models, err := idx.Refresh(t.Context())
 		require.NoError(t, err)
-		_, err = idx.Refresh(t.Context())
-		require.NoError(t, err)
-		_, err = idx.NewLookup().ByID(t.Context(), "ei:efficientnet-b4")
-		require.NoError(t, err)
-
-		assert.Equal(t, int64(2), listings.Load())
+		assert.Equal(t, int64(1), listings.Load())
+		assert.Equal(t, "piper-tts-en", models[0].ID, "the answer is what the listing wrote")
 	})
 
-	t.Run("a failed listing is remembered per Lookup", func(t *testing.T) {
+	t.Run("a failed listing is retried by the next Lookup", func(t *testing.T) {
 		var failed atomic.Int64
 		cli := newFakeDockerClient(func(_ string, cmd []string) (string, int) {
 			if len(cmd) > 0 && cmd[0] == listModelsCmd {
@@ -512,23 +405,50 @@ func TestLookupRunsOneListing(t *testing.T) {
 			}
 			return "", 1
 		})
-		dir := paths.New("testdata/with-handlers")
-		idx, err := Load(platform.Platform{BoardName: "ventunoq"}, dir, paths.New("not-existing-path"), dir.Join("custom-models"), cli, config.Configuration{})
-		require.NoError(t, err)
+		idx := loadTestIndex(t, paths.New(t.TempDir()), cli)
 
 		lookup := idx.NewLookup()
 		_, err1 := lookup.ByID(t.Context(), "ei:efficientnet-b4")
-		_, err2 := lookup.ByID(t.Context(), "piper-tts-en")
-		_, err3 := lookup.All(t.Context())
+		_, err2 := lookup.All(t.Context())
 		require.Error(t, err1)
 		require.Error(t, err2)
-		require.Error(t, err3)
 		assert.Equal(t, int64(1), failed.Load(), "one Lookup, one attempt")
 
-		// A failure is not cached in the index: the next Lookup tries again.
-		_, err = idx.NewLookup().ByID(t.Context(), "ei:efficientnet-b4")
+		_, err := idx.NewLookup().ByID(t.Context(), "ei:efficientnet-b4")
 		require.Error(t, err)
 		assert.Equal(t, int64(2), failed.Load(), "a new Lookup retries")
+	})
+
+	t.Run("concurrent lookups with no index share one listing", func(t *testing.T) {
+		modelsDir := paths.New(t.TempDir())
+		var listings atomic.Int64
+		release := make(chan struct{})
+		cli := newFakeDockerClient(func(_ string, cmd []string) (string, int) {
+			listings.Add(1)
+			<-release
+			writeIndex(t, modelsDir, piperEntry)
+			return "", 0
+		})
+		idx := loadTestIndex(t, modelsDir, cli)
+
+		const callers = 5
+		var wg sync.WaitGroup
+		errs := make(chan error, callers)
+		for range callers {
+			wg.Go(func() {
+				_, err := idx.NewLookup().All(context.Background())
+				errs <- err
+			})
+		}
+		require.Eventually(t, func() bool { return listings.Load() == 1 }, time.Second, time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // the other callers join the run in flight
+		close(release)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			require.NoError(t, err)
+		}
+		assert.Equal(t, int64(1), listings.Load())
 	})
 }
 
@@ -543,33 +463,32 @@ func TestRefreshEmptyCatalog(t *testing.T) {
 	models, err := idx.Refresh(t.Context())
 	require.ErrorIs(t, err, ErrEmptyCatalog)
 	assert.Nil(t, models)
-	assert.Nil(t, idx.snapshot(), "an empty catalog is not cached")
 }
 
-// TestDownloadByURL pins what reaches the container for an undeclared model: the
-// hf-handler's script, the caller's URL, and models_repository fixed to llamacpp.
-// downloadedEntry is what the listing reports for the model these downloads write: the
-// record names the link, so the reconcile step can describe it.
-const downloadedEntry = `{"id":"llamacpp:org/repo/m-Q4_0","name":"org/repo/m-Q4_0","handler":"llamacpp",
-	"model_origin":"user","installed":true,"disk_size_mb":1,
-	"download_metadata":{"handler":"hf-handler","model_id":"llamacpp:org/repo/m-Q4_0",
-		"inputs":{"models_repository":"llamacpp","model_url":"llamacpp:org/repo:Q4_0"}}}`
+// downloadDone is what the hf-handler prints once it has recorded the model.
+const downloadDone = `{"event":"info","description":"Downloaded to: /models/org/repo","artifacts":["/models/org/repo/m-Q4_0.gguf"],"model_id":"llamacpp:org/repo/m-Q4_0","size_mb":1}` + "\n"
 
+// TestDownloadByURL pins what reaches the container for an undeclared model: the
+// hf-handler's script, the caller's URL, and models_repository fixed to llamacpp. The
+// handler rewrites the index itself, so no listing runs after it.
 func TestDownloadByURL(t *testing.T) {
+	modelsDir := paths.New(t.TempDir())
+	writeIndex(t, modelsDir, piperEntry)
 	var gotCmd []string
 	var gotEnv []string
+	var listings atomic.Int64
 	cli := newFakeDockerClientWithEnv(func(_ string, cmd, env []string) (string, int) {
 		if len(cmd) > 0 && cmd[0] == listModelsCmd {
-			return listingWith(downloadedEntry), 0
+			listings.Add(1)
+			return "", 0
 		}
 		if len(cmd) > 0 && strings.Contains(cmd[0], "hf_model_downloader.sh") {
 			gotCmd, gotEnv = cmd, env
+			writeIndex(t, modelsDir, piperEntry, downloadedEntry)
 		}
-		return `{"event":"info","description":"Downloaded to: /models/org/repo","artifacts":["/models/org/repo/m-Q4_0.gguf"],"model_id":"llamacpp:org/repo/m-Q4_0","size_mb":1}` + "\n", 0
+		return downloadDone, 0
 	})
-	dir := paths.New("testdata/with-handlers")
-	idx, err := Load(platform.Platform{BoardName: "ventunoq"}, dir, paths.New("not-existing-path"), dir.Join("custom-models"), cli, config.Configuration{})
-	require.NoError(t, err)
+	idx := loadTestIndex(t, modelsDir, cli)
 
 	installed, err := idx.DownloadByURL(t.Context(), cli, "llamacpp:org/repo:Q4_0", "", platform.Platform{BoardName: "ventunoq"}, func(StreamMessage) {})
 	require.NoError(t, err)
@@ -579,25 +498,37 @@ func TestDownloadByURL(t *testing.T) {
 	assert.Contains(t, gotEnv, "models_repository=llamacpp")
 	assert.NotContains(t, strings.Join(gotEnv, " "), "model_mmproj_url", "an empty mmproj url must not be passed")
 
-	// The answer is the listed model, so the caller reports what a later GetModels reports.
+	// The answer is the listed model, so the caller reports what a later list reports.
 	assert.Equal(t, "llamacpp:org/repo/m-Q4_0", installed.ID)
 	assert.Equal(t, InstalledStatus, installed.Status)
 	assert.Equal(t, uint64(1024*1024), installed.SizeBytes)
-	assert.Equal(t, map[string]string{"source-model-url": "llamacpp:org/repo:Q4_0"}, installed.Metadata)
+	assert.Zero(t, listings.Load(), "the handler wrote the index")
+}
+
+// A handler whose index rewrite failed leaves the model unlisted: one listing run fixes it.
+func TestDownloadByURLListsWhenTheHandlerCouldNot(t *testing.T) {
+	modelsDir := paths.New(t.TempDir())
+	writeIndex(t, modelsDir, piperEntry)
+	cli, listings := indexedClient(t, modelsDir, []string{piperEntry, downloadedEntry}, func([]string) (string, int) {
+		return downloadDone, 0
+	})
+	idx := loadTestIndex(t, modelsDir, cli)
+
+	installed, err := idx.DownloadByURL(t.Context(), cli, "llamacpp:org/repo:Q4_0", "", platform.Platform{BoardName: "ventunoq"}, func(StreamMessage) {})
+	require.NoError(t, err)
+	assert.Equal(t, InstalledStatus, installed.Status)
+	assert.Equal(t, int64(1), listings.Load())
 }
 
 // A repository already on disk is not transferred again: the handler reports the model it
-// finds, with no "complete" event, and the route answers from that event alone.
+// finds, with no "complete" event, and the route answers from the index.
 func TestDownloadByURLReportsAnInstalledModel(t *testing.T) {
+	modelsDir := paths.New(t.TempDir())
+	writeIndex(t, modelsDir, downloadedEntry)
 	cli := newFakeDockerClient(func(_ string, cmd []string) (string, int) {
-		if len(cmd) > 0 && cmd[0] == listModelsCmd {
-			return listingWith(downloadedEntry), 0
-		}
 		return `{"event":"info","description":"Model exists: org/repo (m-Q4_0.gguf)","artifacts":["/models/org/repo/m-Q4_0.gguf"],"model_id":"llamacpp:org/repo/m-Q4_0","size_mb":1}` + "\n", 0
 	})
-	dir := paths.New("testdata/with-handlers")
-	idx, err := Load(platform.Platform{BoardName: "ventunoq"}, dir, paths.New("not-existing-path"), dir.Join("custom-models"), cli, config.Configuration{})
-	require.NoError(t, err)
+	idx := loadTestIndex(t, modelsDir, cli)
 
 	var messages []string
 	installed, err := idx.DownloadByURL(t.Context(), cli, "llamacpp:org/repo:Q4_0", "", platform.Platform{BoardName: "ventunoq"}, func(e StreamMessage) {
@@ -612,6 +543,24 @@ func TestDownloadByURLReportsAnInstalledModel(t *testing.T) {
 	assert.Equal(t, []string{"Model exists: org/repo (m-Q4_0.gguf)"}, messages)
 }
 
+// A release's catalog can declare a model the image's catalog does not: once downloaded,
+// the declaration describes it.
+func TestInstallOfAModelTheIndexDoesNotList(t *testing.T) {
+	modelsDir := paths.New(t.TempDir())
+	cli, listings := indexedClient(t, modelsDir, []string{piperEntry}, func([]string) (string, int) {
+		return `{"event":"info","description":"Downloaded","model_id":"ei:efficientnet-b4","size_mb":2}` + "\n", 0
+	})
+	writeIndex(t, modelsDir, piperEntry)
+	idx := loadTestIndex(t, modelsDir, cli)
+
+	installed, err := idx.Install(t.Context(), fakeCommandCli{cli: cli}, "ei:efficientnet-b4", platform.Platform{BoardName: "ventunoq"}, func(StreamMessage) {})
+	require.NoError(t, err)
+	assert.Equal(t, "ei:efficientnet-b4", installed.ID)
+	assert.Equal(t, InstalledStatus, installed.Status)
+	assert.Equal(t, uint64(2*1024*1024), installed.SizeBytes)
+	assert.Equal(t, int64(1), listings.Load(), "one listing tried before falling back to the declaration")
+}
+
 // A model installed by its declaration reaches no container. The install route answers it
 // without calling Download at all, so this guards the other callers.
 func TestDownloadRefusesAModelWithNothingToDownload(t *testing.T) {
@@ -620,9 +569,7 @@ func TestDownloadRefusesAModelWithNothingToDownload(t *testing.T) {
 		started++
 		return "", 0
 	})
-	dir := paths.New("testdata/with-handlers")
-	idx, err := Load(platform.Platform{BoardName: "ventunoq"}, dir, paths.New("not-existing-path"), dir.Join("custom-models"), cli, config.Configuration{})
-	require.NoError(t, err)
+	idx := loadTestIndex(t, paths.New(t.TempDir()), cli)
 
 	// A nil docker client: a model that needs no download must not read it.
 	installed, err := idx.Install(t.Context(), nil, "piper-tts-en", platform.Platform{BoardName: "ventunoq"}, func(StreamMessage) {})
@@ -638,114 +585,58 @@ func TestDownloadRefusesAModelWithNothingToDownload(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoHandler)
 }
 
-func TestLockKey(t *testing.T) {
-	const board = "ventunoq"
-	userHF := AIModel{
-		ID:     "llamacpp:org/repo/m-Q4_0",
-		Origin: UserOrigin,
-		Deployment: &ModelDeployment{
-			Handler:   "hf-handler",
-			Variables: []map[string]PlatformDeploymentConfig{{board: {Variables: map[string]string{"model_url": "https://hf.co/org/repo/m-Q4_0.gguf"}}}},
-		},
-	}
-	userNoURL := userHF
-	userNoURL.Deployment = &ModelDeployment{
-		Handler:   "hf-handler",
-		Variables: []map[string]PlatformDeploymentConfig{{board: {Variables: map[string]string{"models_repository": "llamacpp"}}}},
-	}
+// busyLine is what a download or delete prints when another one holds the model's lock in
+// its container.
+const busyLine = `{"event":"error","code":"install_in_progress","description":"Another operation is in progress on model: org/repo"}` + "\n"
 
-	tests := []struct {
-		name  string
-		model AIModel
-		want  string
-	}{
-		{"curated: its id", AIModel{ID: "gemma-3-1b", Origin: CuratedOrigin, Deployment: &ModelDeployment{Handler: "hf-handler"}}, "gemma-3-1b"},
-		{"user EI, no deployment: its id", AIModel{ID: "ei-model-1-2", Origin: UserOrigin}, "ei-model-1-2"},
-		{"user HF: the link its install locked", userHF, "https://hf.co/org/repo/m-Q4_0.gguf"},
-		{"user model with no link: its id", userNoURL, "llamacpp:org/repo/m-Q4_0"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, lockKey(tc.model, board))
-		})
-	}
-}
-
-// TestDownloadByURLHoldsTheLock: PrecheckDownload takes the link's lock and the caller holds
-// it through the download. A second precheck of the same link, or a delete of the model the
-// link installs, is refused meanwhile; once released, the link is free again.
-func TestDownloadByURLHoldsTheLock(t *testing.T) {
-	const url = "llamacpp:org/repo:Q4_0" // the link downloadedEntry records
-	var downloads atomic.Int64
-	started := make(chan struct{})
-	release := make(chan struct{})
-	cli := newFakeDockerClient(func(_ string, cmd []string) (string, int) {
-		switch {
-		case len(cmd) > 0 && cmd[0] == listModelsCmd:
-			return listingWith(downloadedEntry), 0
-		case len(cmd) > 0 && strings.Contains(cmd[0], "hf_model_info.sh"):
-			return `{"event":"stat","size_bytes":1}` + "\n", 0
-		case len(cmd) > 0 && strings.Contains(cmd[0], "hf_model_checker.sh"):
-			return `{"event":"error","description":"Model does not exist","downloading":false}` + "\n", 1
-		}
-		if downloads.Add(1) == 1 {
-			close(started)
-			<-release // hold the first download until the test is done checking
-		}
-		return `{"event":"info","description":"done","model_id":"llamacpp:org/repo/m-Q4_0","size_mb":1}` + "\n", 0
-	})
-	dir := paths.New("testdata/with-handlers")
+// TestBusyModel: the lock lives in the containers, and the handler says when it is held.
+func TestBusyModel(t *testing.T) {
 	plat := platform.Platform{BoardName: "ventunoq"}
-	idx, err := Load(plat, dir, paths.New(t.TempDir()), dir.Join("custom-models"), cli, config.Configuration{})
-	require.NoError(t, err)
-	idx.locksDir = paths.New(t.TempDir()) // a test config has no data dir: locking would be off
 
-	firstErr := make(chan error, 1)
-	go func() {
-		unlock, res, err := idx.PrecheckDownload(context.Background(), cli, url, "", plat)
-		if err != nil {
-			firstErr <- err
-			return
-		}
-		defer unlock()
-		if res.Installed {
-			firstErr <- errors.New("precheck reported the model installed")
-			return
-		}
-		_, err = idx.DownloadByURL(context.Background(), cli, url, "", plat, func(StreamMessage) {})
-		firstErr <- err
-	}()
-	<-started
+	t.Run("a download finding the lock held is ErrInstallInProgress, not a reported error", func(t *testing.T) {
+		modelsDir := paths.New(t.TempDir())
+		writeIndex(t, modelsDir, piperEntry)
+		cli := newFakeDockerClient(func(_ string, _ []string) (string, int) { return busyLine, 75 })
+		idx := loadTestIndex(t, modelsDir, cli)
 
-	t.Run("a second precheck of the same link is refused", func(t *testing.T) {
-		_, _, err := idx.PrecheckDownload(t.Context(), cli, url, "", plat)
+		var published []StreamMessage
+		_, err := idx.DownloadByURL(t.Context(), cli, "llamacpp:org/repo:Q4_0", "", plat, func(e StreamMessage) { published = append(published, e) })
 		require.ErrorIs(t, err, ErrInstallInProgress)
-		assert.Equal(t, int64(1), downloads.Load(), "no second download container")
+		assert.NotErrorIs(t, err, ErrDownloadReported)
+		assert.Empty(t, published, "the caller reports it once, with its own code")
 	})
 
-	t.Run("deleting the model that link installs takes the same lock", func(t *testing.T) {
-		listed, err := idx.NewLookup().ByID(t.Context(), "llamacpp:org/repo/m-Q4_0")
+	t.Run("a delete finding the lock held is ErrInstallInProgress", func(t *testing.T) {
+		modelsDir := paths.New(t.TempDir())
+		writeIndex(t, modelsDir, downloadedEntry)
+		cli := newFakeDockerClient(func(_ string, _ []string) (string, int) { return busyLine, 75 })
+		idx := loadTestIndex(t, modelsDir, cli)
+
+		model, err := idx.NewLookup().ByID(t.Context(), "llamacpp:org/repo/m-Q4_0")
 		require.NoError(t, err)
-		require.NotNil(t, listed)
-		unlock, err := lockModel(idx.locksDir, lockKey(*listed, plat.BoardName))
-		defer unlock()
+		err = idx.Delete(t.Context(), fakeCommandCli{cli: cli}, plat, *model)
 		require.ErrorIs(t, err, ErrInstallInProgress)
 	})
 
-	close(release)
-	require.NoError(t, <-firstErr)
+	t.Run("a delete runs no listing: the handler rewrites the index", func(t *testing.T) {
+		modelsDir := paths.New(t.TempDir())
+		writeIndex(t, modelsDir, downloadedEntry)
+		cli, listings := indexedClient(t, modelsDir, nil, func([]string) (string, int) {
+			return `{"event":"info","description":"Model removed"}` + "\n", 0
+		})
+		idx := loadTestIndex(t, modelsDir, cli)
 
-	t.Run("after it ends the link is free again", func(t *testing.T) {
-		unlock, err := lockModel(idx.locksDir, url)
+		model, err := idx.NewLookup().ByID(t.Context(), "llamacpp:org/repo/m-Q4_0")
 		require.NoError(t, err)
-		unlock()
+		require.NoError(t, idx.Delete(t.Context(), fakeCommandCli{cli: cli}, plat, *model))
+		assert.Zero(t, listings.Load())
 	})
 }
 
 // TestDownloadCancelled: a caller that goes away mid-download stops the container, which
 // cleans up and reports "interrupted"; the result is the cancellation, not a container
-// error, and the listing runs again so the cache does not keep "downloading". A download
-// that fails on its own stays a container error, with no extra listing.
+// error. A download that fails on its own stays a container error. Neither runs a listing:
+// the index never listed the model as there.
 func TestDownloadCancelled(t *testing.T) {
 	const url = "llamacpp:org/repo:Q4_0"
 	const interrupted = `{"event":"error","description":"Download interrupted by signal; partial files removed"}`
@@ -753,21 +644,13 @@ func TestDownloadCancelled(t *testing.T) {
 
 	newIndex := func(t *testing.T, download func() (string, int)) (*ModelsIndex, *fakeDockerClient, *atomic.Int64) {
 		t.Helper()
-		var listings atomic.Int64
-		cli := newFakeDockerClient(func(_ string, cmd []string) (string, int) {
-			if len(cmd) > 0 && cmd[0] == listModelsCmd {
-				listings.Add(1)
-				return listingWith(), 0
-			}
-			return download()
-		})
-		dir := paths.New("testdata/with-handlers")
-		idx, err := Load(plat, dir, paths.New(t.TempDir()), dir.Join("custom-models"), cli, config.Configuration{})
-		require.NoError(t, err)
-		return idx, cli, &listings
+		modelsDir := paths.New(t.TempDir())
+		writeIndex(t, modelsDir, piperEntry)
+		cli, listings := indexedClient(t, modelsDir, []string{piperEntry}, func([]string) (string, int) { return download() })
+		return loadTestIndex(t, modelsDir, cli), cli, listings
 	}
 
-	t.Run("cancelled: the cancellation is the error, and the listing runs again", func(t *testing.T) {
+	t.Run("canceled: the cancellation is the error", func(t *testing.T) {
 		started := make(chan struct{})
 		stopped := make(chan struct{})
 		var stopOnce sync.Once
@@ -785,22 +668,21 @@ func TestDownloadCancelled(t *testing.T) {
 			errCh <- err
 		}()
 		<-started
-		before := listings.Load()
 		cancel()
 
 		err := <-errCh
 		require.ErrorIs(t, err, context.Canceled)
 		assert.NotErrorIs(t, err, ErrDownloadReported, "the container's interrupted event follows the cancel, it is not the cause")
-		assert.Greater(t, listings.Load(), before, "the cache is refreshed after a cancel")
+		assert.Zero(t, listings.Load())
 	})
 
-	t.Run("failed on its own: a container error, no extra listing", func(t *testing.T) {
+	t.Run("failed on its own: a container error", func(t *testing.T) {
 		idx, cli, listings := newIndex(t, func() (string, int) {
 			return `{"event":"error","description":"Download failed: disk full"}` + "\n", 1
 		})
 
 		_, err := idx.DownloadByURL(t.Context(), cli, url, "", plat, func(StreamMessage) {})
 		require.ErrorIs(t, err, ErrDownloadReported)
-		assert.Zero(t, listings.Load(), "no refresh on a plain failure")
+		assert.Zero(t, listings.Load())
 	})
 }

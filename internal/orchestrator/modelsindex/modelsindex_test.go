@@ -162,12 +162,11 @@ func TestModelsIndex(t *testing.T) {
 		assert.Equal(t, InstalledStatus, model.Status)
 	})
 
-	t.Run("it read the status of the model from the handler listing", func(t *testing.T) {
+	t.Run("it reads the status of the model from the index", func(t *testing.T) {
 		t.Run("installed", func(t *testing.T) {
-			cli := newFakeDockerClient(func(image string, cmd []string) (string, int) {
-				return listingWith(`{"id":"a-model-not-preloaded-with-handler","installed":true}`), 0
-			})
-			modelsIndex, err := Load(platform.GetPlatform(nil), paths.New("testdata"), paths.New("testdata/models"), nil, cli, config.Configuration{})
+			modelsDir := paths.New(t.TempDir())
+			writeIndex(t, modelsDir, `a-model-not-preloaded-with-handler: {deployment: {handler: my-handler}, status: installed, origin: curated}`)
+			modelsIndex, err := Load(platform.GetPlatform(nil), paths.New("testdata"), modelsDir, nil, newFakeDockerClient(nil), config.Configuration{})
 			require.NoError(t, err)
 
 			model, err := modelsIndex.NewLookup().ByID(t.Context(), "a-model-not-preloaded-with-handler")
@@ -186,10 +185,9 @@ func TestModelsIndex(t *testing.T) {
 		})
 
 		t.Run("not installed: a download is in flight", func(t *testing.T) {
-			cli := newFakeDockerClient(func(image string, cmd []string) (string, int) {
-				return listingWith(`{"id":"a-model-not-preloaded-with-handler","installed":false,"downloading":true}`), 0
-			})
-			modelsIndex, err := Load(platform.GetPlatform(nil), paths.New("testdata"), paths.New("testdata/models"), nil, cli, config.Configuration{})
+			modelsDir := paths.New(t.TempDir())
+			writeIndex(t, modelsDir, `a-model-not-preloaded-with-handler: {deployment: {handler: my-handler}, status: downloading, origin: curated}`)
+			modelsIndex, err := Load(platform.GetPlatform(nil), paths.New("testdata"), modelsDir, nil, newFakeDockerClient(nil), config.Configuration{})
 			require.NoError(t, err)
 
 			model, err := modelsIndex.NewLookup().ByID(t.Context(), "a-model-not-preloaded-with-handler")
@@ -208,10 +206,9 @@ func TestModelsIndex(t *testing.T) {
 		})
 
 		t.Run("not installed: absent from disk", func(t *testing.T) {
-			cli := newFakeDockerClient(func(image string, cmd []string) (string, int) {
-				return listingWith(`{"id":"a-model-not-preloaded-with-handler","installed":false}`), 0
-			})
-			modelsIndex, err := Load(platform.GetPlatform(nil), paths.New("testdata"), paths.New("testdata/models"), nil, cli, config.Configuration{})
+			modelsDir := paths.New(t.TempDir())
+			writeIndex(t, modelsDir, `a-model-not-preloaded-with-handler: {deployment: {handler: my-handler}, status: not-installed, origin: curated}`)
+			modelsIndex, err := Load(platform.GetPlatform(nil), paths.New("testdata"), modelsDir, nil, newFakeDockerClient(nil), config.Configuration{})
 			require.NoError(t, err)
 
 			model, err := modelsIndex.NewLookup().ByID(t.Context(), "a-model-not-preloaded-with-handler")

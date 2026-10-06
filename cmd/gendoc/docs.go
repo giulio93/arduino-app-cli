@@ -1033,7 +1033,7 @@ Contains a JSON object with the details of an error.
 			Path:        "/v1/models",
 			Request: (*struct {
 				Bricks  string `query:"bricks" description:"Filter models by bricks. If not specified, all models are returned."`
-				Refresh bool   `query:"refresh" description:"Run the models listing again instead of answering from the cache. Use after changing model files outside the API. Defaults to false."`
+				Refresh bool   `query:"refresh" description:"Run the models listing again, which rewrites the models index, instead of reading the index as it is. Use after changing model files outside the API. Defaults to false."`
 			})(nil),
 			CustomSuccessResponse: &CustomResponseDef{
 				ContentType:   "application/json",
