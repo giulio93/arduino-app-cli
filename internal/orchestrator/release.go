@@ -305,6 +305,8 @@ func stageReleaseIndexes(
 			handlers = append(handlers, model.Deployment.Handler)
 		}
 	}
+	// TODO: only the declarations are frozen, not the builder's state (status, size, folder):
+	// the target board reads its own from .models-index.yaml. Revisit if a release must carry it.
 	if err := modelsindex.WriteModelsList(prebuildDir, models); err != nil {
 		return err
 	}
