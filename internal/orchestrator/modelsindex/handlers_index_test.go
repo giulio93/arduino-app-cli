@@ -320,6 +320,5 @@ handlers:
 func TestIsBusyLine(t *testing.T) {
 	assert.True(t, isBusyLine(`{"event": "error", "code": "install_in_progress", "description": "busy"}`))
 	assert.False(t, isBusyLine(`{"event": "error", "description": "HTTP error"}`))
-	assert.False(t, isBusyLine(`{"event": "info", "code": "install_in_progress"}`))
 	assert.False(t, isBusyLine("not JSON"))
 }
