@@ -360,7 +360,7 @@ type HandlerEvent struct {
 	ModelID     string   `json:"model_id"`    // info: the id of what was downloaded
 	Downloading *bool    `json:"downloading"` // check: nil when the event does not say
 	Status      string   `json:"status"`      // check: installed, not_installed or in_progress
-	Code        string   `json:"code"`        // error: install_in_progress when the model's lock is held
+	ErrorCode   string   `json:"code"`        // error: install_in_progress when the model's lock is held
 	Artifacts   []string `json:"artifacts"`
 }
 
@@ -457,5 +457,5 @@ func checkLineStatus(line string) string {
 // isBusyLine reports whether a download or delete line says another one holds the model.
 func isBusyLine(line string) bool {
 	e, ok := parseHandlerEvent(line)
-	return ok && e.IsError() && e.Code == codeInstallInProgress
+	return ok && e.IsError() && e.ErrorCode == codeInstallInProgress
 }
