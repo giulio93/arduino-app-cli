@@ -444,16 +444,6 @@ func (h *HandlersIndex) downloadModel(ctx context.Context, cli client.APIClient,
 	return h.runAction(ctx, cli, handler, ActionDownload, model.Deployment.VariablesForPlatform(plat.BoardName), lineParser)
 }
 
-// checkLineStatus reads one line of a check action: its status, empty for a line that
-// does not say.
-func checkLineStatus(line string) string {
-	e, ok := parseHandlerEvent(line)
-	if !ok {
-		return ""
-	}
-	return e.Status
-}
-
 // isBusyLine reports whether a download or delete line says another one holds the model.
 func isBusyLine(line string) bool {
 	e, ok := parseHandlerEvent(line)

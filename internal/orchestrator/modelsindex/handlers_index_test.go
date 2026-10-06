@@ -317,24 +317,6 @@ handlers:
 	assert.Equal(t, []string{"${MODELS_PATH}/${models_repository}:/models"}, entry.Volumes)
 }
 
-func TestCheckLineStatus(t *testing.T) {
-	tests := []struct {
-		name, line, status string
-	}{
-		{"installed", `{"event": "info", "description": "Model exists: x", "downloading": false, "status": "installed"}`, CheckInstalled},
-		{"in progress", `{"event": "info", "description": "Model downloading: x", "downloading": true, "status": "in_progress"}`, CheckInProgress},
-		{"killed download", `{"event": "info", "description": "Model downloading: x", "downloading": true, "status": "not_installed"}`, CheckNotInstalled},
-		{"does not exist", `{"event": "error", "description": "Model does not exist: x", "status": "not_installed"}`, CheckNotInstalled},
-		{"no status", `{"event": "info", "description": "x", "downloading": false}`, ""},
-		{"not JSON", "docker: pull failed", ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.status, checkLineStatus(tt.line))
-		})
-	}
-}
-
 func TestIsBusyLine(t *testing.T) {
 	assert.True(t, isBusyLine(`{"event": "error", "code": "install_in_progress", "description": "busy"}`))
 	assert.False(t, isBusyLine(`{"event": "error", "description": "HTTP error"}`))
