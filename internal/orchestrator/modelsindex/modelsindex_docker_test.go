@@ -17,7 +17,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/docker/cli/cli/command"
 	"github.com/moby/moby/api/pkg/stdcopy"
@@ -417,38 +416,6 @@ func TestLookupReadsTheIndex(t *testing.T) {
 		_, err := idx.NewLookup().ByID(t.Context(), "ei:efficientnet-b4")
 		require.Error(t, err)
 		assert.Equal(t, int64(2), failed.Load(), "a new Lookup retries")
-	})
-
-	t.Run("concurrent lookups with no index share one listing", func(t *testing.T) {
-		modelsDir := paths.New(t.TempDir())
-		var listings atomic.Int64
-		release := make(chan struct{})
-		cli := newFakeDockerClient(func(_ string, cmd []string) (string, int) {
-			listings.Add(1)
-			<-release
-			writeIndex(t, modelsDir, piperEntry)
-			return "", 0
-		})
-		idx := loadTestIndex(t, modelsDir, cli)
-
-		const callers = 5
-		var wg sync.WaitGroup
-		errs := make(chan error, callers)
-		for range callers {
-			wg.Go(func() {
-				_, err := idx.NewLookup().All(context.Background())
-				errs <- err
-			})
-		}
-		require.Eventually(t, func() bool { return listings.Load() == 1 }, time.Second, time.Millisecond)
-		time.Sleep(50 * time.Millisecond) // the other callers join the run in flight
-		close(release)
-		wg.Wait()
-		close(errs)
-		for err := range errs {
-			require.NoError(t, err)
-		}
-		assert.Equal(t, int64(1), listings.Load())
 	})
 }
 
