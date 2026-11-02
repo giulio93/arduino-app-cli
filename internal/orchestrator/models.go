@@ -31,42 +31,6 @@ import (
 	"github.com/arduino/arduino-app-cli/internal/platform"
 )
 
-type AIModelsListRequest struct {
-	FilterByBrickID []string
-}
-
-// AIModelsList answers every model, filtered by brick when the request names one. It runs
-// one listing container, and fails when that fails: the install status of every model
-// comes from there, so a list without it states the declaration's guess as fact.
-func AIModelsList(ctx context.Context, req AIModelsListRequest, modelsIndex *modelsindex.ModelsIndex) ([]modelsindex.AIModel, error) {
-	collection, err := modelsIndex.NewLookup().All(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if len(req.FilterByBrickID) != 0 {
-		collection = slices.DeleteFunc(collection, func(model modelsindex.AIModel) bool {
-			return !slices.ContainsFunc(model.Bricks, func(brick modelsindex.BrickConfig) bool {
-				return slices.Contains(req.FilterByBrickID, brick.ID)
-			})
-		})
-	}
-	return collection, nil
-}
-
-// AIModelDetails describes the model id names. It runs the listing container unless the
-// model is installed by its declaration. The id is plain: the API decodes the path before
-// calling in.
-func AIModelDetails(ctx context.Context, modelsIndex *modelsindex.ModelsIndex, id string) (modelsindex.AIModel, bool, error) {
-	model, err := modelsIndex.NewLookup().ByID(ctx, id)
-	if err != nil {
-		return modelsindex.AIModel{}, false, err
-	}
-	if model == nil {
-		return modelsindex.AIModel{}, false, nil
-	}
-	return *model, true, nil
-}
-
 // AIModelInstall downloads a model the internal model list declares and describes what
 // landed. publish reports the handler's own events as they arrive.
 func AIModelInstall(ctx context.Context, dockerClient command.Cli, modelsIndex *modelsindex.ModelsIndex, plat platform.Platform, id string, publish func(modelsindex.StreamMessage)) (modelsindex.AIModel, error) {

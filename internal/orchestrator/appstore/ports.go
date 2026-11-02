@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Arduino s.r.l. and/or its affiliated companies
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-package orchestrator
+package appstore
 
 import (
 	"fmt"
@@ -35,7 +35,7 @@ func AppPorts(
 	for _, p := range a.Descriptor.Ports {
 		ports = append(ports, PortInfo{
 			Port:   strconv.Itoa(p),
-			Source: appPortsSource,
+			Source: AppPortsSource,
 		})
 	}
 

@@ -6,23 +6,11 @@
 package orchestrator
 
 import (
-	"fmt"
 	"regexp"
 	"strconv"
 
 	"github.com/moby/moby/api/types/container"
 	"go.bug.st/f"
-)
-
-type Status string
-
-const (
-	StatusStarting      Status = "starting"
-	StatusRunning       Status = "running"
-	StatusStopping      Status = "stopping"
-	StatusStopped       Status = "stopped"
-	StatusFailed        Status = "failed"
-	StatusUninitialized Status = "uninitialized"
 )
 
 func StatusFromDockerState(s container.ContainerState, statusMessage string) Status {
@@ -46,24 +34,6 @@ func StatusFromDockerState(s container.ContainerState, statusMessage string) Sta
 	default:
 		panic("unreachable")
 	}
-}
-
-func ParseStatus(s string) (Status, error) {
-	s1 := Status(s)
-	return s1, s1.Validate()
-}
-
-func (s Status) Validate() error {
-	switch s {
-	case StatusStarting, StatusRunning, StatusStopping, StatusStopped, StatusFailed, StatusUninitialized:
-		return nil
-	default:
-		return fmt.Errorf("status should be one of %v", s.AllowedStatuses())
-	}
-}
-
-func (s Status) AllowedStatuses() []Status {
-	return []Status{StatusStarting, StatusRunning, StatusStopping, StatusStopped, StatusFailed, StatusUninitialized}
 }
 
 func isExitBySignal(statusMessage string) bool {

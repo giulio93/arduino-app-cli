@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Arduino s.r.l. and/or its affiliated companies
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-package orchestrator
+package appstore
 
 import (
 	"archive/zip"
@@ -451,3 +451,8 @@ func TestFindZipRoot(t *testing.T) {
 		})
 	}
 }
+
+// unkownPlatform is a platform with no board name.
+var unkownPlatform = platform.Platform{}
+
+var unoQPlatform = platform.Platform{BoardName: "unoq"}

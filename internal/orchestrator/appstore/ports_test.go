@@ -3,9 +3,11 @@
 // SPDX-FileCopyrightText: Arduino s.r.l. and/or its affiliated companies
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-package orchestrator
+package appstore
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,6 +15,9 @@ import (
 
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/app"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/bricksindex"
+	"github.com/arduino/arduino-app-cli/internal/orchestrator/servicesindex"
+	"github.com/arduino/arduino-app-cli/internal/platform"
+	"github.com/arduino/go-paths-helper"
 )
 
 func TestAppPorts(t *testing.T) {
@@ -105,4 +110,21 @@ func TestAppPorts(t *testing.T) {
 
 		assert.ErrorContains(t, err, `brick "arduino:unknown-brick" not found in the index`)
 	})
+}
+
+func writeServicesIndex(t *testing.T, composeByServiceID map[string]string) *servicesindex.ServicesIndex {
+	t.Helper()
+	root := paths.New(t.TempDir())
+	for id, compose := range composeByServiceID {
+		_, name, ok := strings.Cut(id, ":")
+		require.True(t, ok, "service id must be namespaced")
+		dir := root.Join("arduino", name)
+		require.NoError(t, dir.MkdirAll())
+		config := fmt.Sprintf("service_id: %s\nname: %s service\ncategory: test\n", id, name)
+		require.NoError(t, dir.Join("service_config.yaml").WriteFile([]byte(config)))
+		require.NoError(t, dir.Join("service_compose.yaml").WriteFile([]byte(compose)))
+	}
+	index, err := servicesindex.Load(platform.GetPlatform(nil), root)
+	require.NoError(t, err)
+	return index
 }
