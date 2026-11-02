@@ -109,7 +109,7 @@ func StartApp(
 
 	bricksIndex = appToStart.Bricks(bricksIndex)
 
-	modelsIndex = appToStart.Models(modelsIndex, docker, cfg, platform)
+	modelsIndex = appModels(&appToStart, modelsIndex, docker, cfg, platform)
 
 	if prepare && !appToStart.IsRelease() {
 		if err := prepareModels(ctx, docker, appToStart.Descriptor.Bricks, bricksIndex, modelsIndex, platform, cb); err != nil {
