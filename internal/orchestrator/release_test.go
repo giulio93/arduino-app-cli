@@ -333,3 +333,31 @@ func readArchiveHeaders(t *testing.T, archivePath *paths.Path) []*tar.Header {
 		headers = append(headers, header)
 	}
 }
+
+func createTestAppPythonOnly(t *testing.T) *paths.Path {
+	tempDir := t.TempDir()
+
+	appYaml := paths.New(tempDir, "app.yaml")
+	require.NoError(t, appYaml.WriteFile([]byte(`
+name: test-python-app
+version: 1.0.0
+description: Test Python-only app
+`)))
+
+	// Create python directory and file
+	pythonDir := paths.New(tempDir, "python")
+	require.NoError(t, pythonDir.MkdirAll())
+
+	pythonFile := pythonDir.Join("main.py")
+	require.NoError(t, pythonFile.WriteFile([]byte(`
+import time
+
+def main():
+    print("Hello from Python!")
+    time.sleep(1)
+
+if __name__ == "__main__":
+    main()
+`)))
+	return paths.New(tempDir)
+}

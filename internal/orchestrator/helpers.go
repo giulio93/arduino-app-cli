@@ -8,10 +8,8 @@ package orchestrator
 import (
 	"context"
 	"fmt"
-	"os"
 	"slices"
 
-	rpc "github.com/arduino/arduino-cli/rpc/cc/arduino/cli/commands/v1"
 	"github.com/arduino/go-paths-helper"
 	"github.com/gosimple/slug"
 	"github.com/moby/moby/api/types/container"
@@ -20,14 +18,8 @@ import (
 
 	"github.com/arduino/arduino-app-cli/internal/dockerhelper"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/app"
-	"github.com/arduino/arduino-app-cli/internal/orchestrator/config"
 	"github.com/arduino/arduino-app-cli/internal/platform"
 )
-
-type AppStatusInfo struct {
-	AppPath *paths.Path
-	Status  Status
-}
 
 // parseAppStatus takes all the containers that matches the DockerAppLabel,
 // and construct a map of the state of an app and all its dependencies state.
@@ -179,12 +171,6 @@ func composeProjectName(appPath *paths.Path, appsDir *paths.Path) string {
 	return slug.Make(appPath.String())
 }
 
-func findAppPathByName(name string, cfg config.Configuration) (*paths.Path, bool) {
-	appFolderName := slug.Make(name)
-	basePath := cfg.AppsDir().Join(appFolderName)
-	return basePath, basePath.Exist()
-}
-
 type ledTarget string
 
 const (
@@ -226,41 +212,5 @@ func restoreLedsState(platform platform.Platform) error {
 			return err
 		}
 	}
-	return nil
-}
-
-func SetArduinoCliConfig(ctx context.Context, cli rpc.ArduinoCoreServiceServer) error {
-	if _, err := cli.SettingsSetValue(ctx, &rpc.SettingsSetValueRequest{
-		Key:          "network.connection_timeout",
-		EncodedValue: "600s",
-		ValueFormat:  "cli",
-	}); err != nil {
-		return err
-	}
-
-	// Set the data dir if specified via the ARDUINO_DIRECTORIES_DATA env var
-	if dataDir, ok := os.LookupEnv("ARDUINO_DIRECTORIES_DATA"); ok {
-		_, err := cli.SettingsSetValue(ctx, &rpc.SettingsSetValueRequest{
-			Key:          "directories.data",
-			EncodedValue: dataDir,
-			ValueFormat:  "cli",
-		})
-		if err != nil {
-			return fmt.Errorf("could not set data directory: %w", err)
-		}
-	}
-
-	// Set the additional urls via ARDUINO_BOARD_MANAGER_ADDITIONAL_URLS env var
-	if urls, ok := os.LookupEnv("ARDUINO_BOARD_MANAGER_ADDITIONAL_URLS"); ok {
-		_, err := cli.SettingsSetValue(ctx, &rpc.SettingsSetValueRequest{
-			Key:          "board_manager.additional_urls",
-			EncodedValue: urls,
-			ValueFormat:  "cli",
-		})
-		if err != nil {
-			return fmt.Errorf("could not set additional urls: %w", err)
-		}
-	}
-
 	return nil
 }

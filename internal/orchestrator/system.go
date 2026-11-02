@@ -16,6 +16,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/arduino/arduino-cli/commands"
 	rpc "github.com/arduino/arduino-cli/rpc/cc/arduino/cli/commands/v1"
@@ -79,6 +80,9 @@ type SystemInitOptions struct {
 	OnlyDockerImages    bool
 	OnlyPlatformAndLibs bool
 }
+
+// IndexMaxAge is the age after which system init and the platform upgrade download an index again.
+const IndexMaxAge = 20 * time.Minute
 
 func (o SystemInitOptions) Validate() error {
 	if o.OnlyDockerImages && o.OnlyPlatformAndLibs {
