@@ -41,7 +41,7 @@ func newDetailsCmd(cfg config.Configuration) *cobra.Command {
 func detailsHandler(ctx context.Context, cfg config.Configuration, arduinoApp appmodel.ArduinoApp) error {
 	details, err := orchestrator.AppDetails(
 		ctx,
-		servicelocator.GetDockerClient(),
+		orchestrator.NewDockerRuntime(servicelocator.GetDockerClient()),
 		arduinoApp,
 		servicelocator.GetBricksIndex(),
 		servicelocator.GetAppIDProvider(),

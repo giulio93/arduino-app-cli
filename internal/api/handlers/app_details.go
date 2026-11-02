@@ -19,12 +19,10 @@ import (
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/bricksindex"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/config"
 	"github.com/arduino/arduino-app-cli/internal/render"
-
-	"github.com/docker/cli/cli/command"
 )
 
 func HandleAppDetails(
-	dockerClient command.Cli,
+	rt orchestrator.Runtime,
 	bricksIndex *bricksindex.BricksIndex,
 	idProvider *appid.Provider,
 	cfg config.Configuration,
@@ -43,7 +41,7 @@ func HandleAppDetails(
 			return
 		}
 
-		res, err := orchestrator.AppDetails(r.Context(), dockerClient, app, bricksIndex, idProvider, cfg)
+		res, err := orchestrator.AppDetails(r.Context(), rt, app, bricksIndex, idProvider, cfg)
 		if err != nil {
 			slog.Error("Unable to parse the app.yaml", slog.String("error", err.Error()))
 			render.EncodeResponse(w, http.StatusInternalServerError, models.ErrorResponse{Details: "unable to find the app"})
@@ -61,7 +59,7 @@ type EditRequest struct {
 }
 
 func HandleAppDetailsEdits(
-	dockerClient command.Cli,
+	rt orchestrator.Runtime,
 	bricksIndex *bricksindex.BricksIndex,
 	idProvider *appid.Provider,
 	cfg config.Configuration,
@@ -112,7 +110,7 @@ func HandleAppDetailsEdits(
 				Description: editRequest.Description,
 			}
 		}
-		err = orchestrator.EditApp(r.Context(), dockerClient, appEditRequest, &appToEdit, cfg)
+		err = orchestrator.EditApp(r.Context(), rt, appEditRequest, &appToEdit, cfg)
 		if err != nil {
 			switch {
 			case errors.Is(err, app.ErrInvalidApp):
@@ -132,7 +130,7 @@ func HandleAppDetailsEdits(
 			return
 		}
 
-		res, err := orchestrator.AppDetails(r.Context(), dockerClient, appToEdit, bricksIndex, idProvider, cfg)
+		res, err := orchestrator.AppDetails(r.Context(), rt, appToEdit, bricksIndex, idProvider, cfg)
 		if err != nil {
 			slog.Error("Unable to parse the app.yaml", slog.String("error", err.Error()))
 			render.EncodeResponse(w, http.StatusInternalServerError, models.ErrorResponse{Details: "unable to find the app"})

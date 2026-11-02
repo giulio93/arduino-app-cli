@@ -52,7 +52,7 @@ func listHandler(ctx context.Context, cfg config.Configuration, showExamples, sh
 	restricted := showExamples || showReleases
 
 	res, err := orchestrator.ListApps(ctx,
-		servicelocator.GetDockerClient(),
+		orchestrator.NewDockerRuntime(servicelocator.GetDockerClient()),
 		orchestrator.ListAppRequest{
 			ShowApps:     showAll || !restricted,
 			ShowExamples: showAll || showExamples,
