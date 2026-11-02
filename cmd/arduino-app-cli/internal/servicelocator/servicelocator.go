@@ -66,7 +66,7 @@ var (
 
 	GetBrickService = sync.OnceValue(func() *bricks.Service {
 		return bricks.NewService(
-			GetModelsIndex(),
+			bricks.BoardModels(GetModelsIndex()),
 			GetBricksIndex(),
 		)
 	})

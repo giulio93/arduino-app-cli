@@ -244,7 +244,7 @@ func TestUpdateBrick(t *testing.T) {
 		require.NoError(t, err)
 		modelsIndex, err := modelsindex.Load(unoQPlatform, paths.New("testdata"), paths.New("not_exixsting_path"), paths.New("not_exixsting_path"), nil, config.Configuration{})
 		require.NoError(t, err)
-		brickService := NewService(modelsIndex, bricksIndex)
+		brickService := NewService(BoardModels(modelsIndex), bricksIndex)
 
 		modelPath := "/home/arduino/.arduino-bricks/ei-model-123-1/model.eim"
 		modelId := "ei-model-123-1"
@@ -280,7 +280,7 @@ func TestUpdateBrick(t *testing.T) {
 		require.NoError(t, err)
 		modelsIndex, err := modelsindex.Load(unoQPlatform, paths.New("testdata"), paths.New("not_exixsting_path"), paths.New("not_exixsting_path"), nil, config.Configuration{})
 		require.NoError(t, err)
-		brickService := NewService(modelsIndex, bricksIndex)
+		brickService := NewService(BoardModels(modelsIndex), bricksIndex)
 
 		modelID := "ei-model-123-1"
 		req := BrickCreateUpdateRequest{
@@ -473,7 +473,7 @@ bricks:
 
 	svc := &Service{
 		bricksIndex: bIndex,
-		modelsIndex: mIndex,
+		modelsIndex: BoardModels(mIndex),
 	}
 	idProvider := appid.NewAppProvider(cfg, unoQPlatform)
 
@@ -654,7 +654,7 @@ bricks:
 
 	svc := &Service{
 		bricksIndex: bIndex,
-		modelsIndex: mIndex,
+		modelsIndex: BoardModels(mIndex),
 	}
 
 	tests := []struct {
@@ -1049,7 +1049,7 @@ func TestAppBrickInstancesList(t *testing.T) {
 			require.NoError(t, err)
 			svc := &Service{
 				bricksIndex: bIndex,
-				modelsIndex: modelsIdx,
+				modelsIndex: BoardModels(modelsIdx),
 			}
 			result := svc.AppBrickInstancesList(tt.app)
 			if tt.validate != nil {
