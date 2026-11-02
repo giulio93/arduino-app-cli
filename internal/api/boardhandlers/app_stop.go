@@ -3,14 +3,11 @@
 // SPDX-FileCopyrightText: Arduino s.r.l. and/or its affiliated companies
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-package handlers
+package boardhandlers
 
 import (
-	"errors"
 	"log/slog"
 	"net/http"
-
-	"github.com/docker/cli/cli/command"
 
 	"github.com/arduino/arduino-app-cli/internal/api/models"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator"
@@ -19,23 +16,15 @@ import (
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/config"
 	"github.com/arduino/arduino-app-cli/internal/platform"
 	"github.com/arduino/arduino-app-cli/internal/render"
+
+	"github.com/docker/cli/cli/command"
 )
 
-type AppPrepareResponse struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Release string `json:"release"`
-	Target  string `json:"target"`
-}
-
-// HandleAppPrepare downloads what an already installed release needs to run,
-// without starting it: the containers its compose file names and the models it ships.
-func HandleAppPrepare(
+func HandleAppStop(
 	dockerClient command.Cli,
-	provisioner *orchestrator.Provision,
 	idProvider *appid.Provider,
+	platform platform.Platform,
 	cfg config.Configuration,
-	plat platform.Platform,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := idProvider.IDFromBase64(r.PathValue("appID"))
@@ -44,7 +33,7 @@ func HandleAppPrepare(
 			return
 		}
 
-		arduinoApp, err := app.Load(id.ToPath())
+		app, err := app.Load(id.ToPath())
 		if err != nil {
 			slog.Error("Unable to parse the app.yaml", slog.String("error", err.Error()), slog.String("path", id.String()))
 			render.EncodeResponse(w, http.StatusInternalServerError, models.ErrorResponse{Details: "unable to find the app"})
@@ -53,7 +42,7 @@ func HandleAppPrepare(
 
 		sseStream, err := render.NewSSEStream(r.Context(), w)
 		if err != nil {
-			slog.Error("unable to create SSE stream", slog.String("error", err.Error()))
+			slog.Error("Unable to create SSE stream", slog.String("error", err.Error()))
 			render.EncodeResponse(w, http.StatusInternalServerError, models.ErrorResponse{Details: "unable to create SSE stream"})
 			return
 		}
@@ -63,29 +52,22 @@ func HandleAppPrepare(
 			Name     string  `json:"name"`
 			Progress float32 `json:"progress"`
 		}
-
-		if err := orchestrator.PrepareInstalledRelease(r.Context(), dockerClient, provisioner, arduinoApp, cfg, plat, func(item orchestrator.StreamMessage) {
+		type log struct {
+			Message string `json:"message"`
+		}
+		err = orchestrator.StopApp(r.Context(), dockerClient, platform, app, cfg, func(item orchestrator.StreamMessage) {
 			switch item.GetType() {
 			case orchestrator.ProgressType:
 				sseStream.Send(render.SSEEvent{Type: render.ProgressEvent, Data: progress(*item.GetProgress())})
 			case orchestrator.InfoType:
-				sseStream.Send(render.SSEEvent{Type: render.MessageEvent, Data: sseLog{Message: item.GetData()}})
+				sseStream.Send(render.SSEEvent{Type: render.MessageEvent, Data: log{Message: item.GetData()}})
 			}
-		}); err != nil {
-			code := render.InternalServiceErr
-			if errors.Is(err, orchestrator.ErrBadRequest) {
-				code = render.BadRequestErr
-			}
-			sseStream.SendError(render.SSEErrorData{Code: code, Message: err.Error()})
-			return
+		})
+		if err != nil {
+			sseStream.SendError(render.SSEErrorData{
+				Code:    render.InternalServiceErr,
+				Message: err.Error(),
+			})
 		}
-
-		release, _ := arduinoApp.GetRelease()
-		sseStream.Send(render.SSEEvent{Type: render.DoneEvent, Data: AppPrepareResponse{
-			ID:      id.String(),
-			Name:    arduinoApp.Name,
-			Release: release.ID,
-			Target:  release.Target,
-		}})
 	}
 }

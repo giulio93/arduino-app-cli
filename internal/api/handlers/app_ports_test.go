@@ -8,9 +8,8 @@ package handlers
 import (
 	"testing"
 
+	"github.com/arduino/arduino-app-cli/internal/orchestrator/appstore"
 	"github.com/stretchr/testify/assert"
-
-	"github.com/arduino/arduino-app-cli/internal/orchestrator"
 )
 
 // TestBuildAppPortResponse checks the mapping of the ports of an app to the response of the API,
@@ -19,31 +18,31 @@ import (
 func TestBuildAppPortResponse(t *testing.T) {
 	testCases := []struct {
 		name  string
-		ports []orchestrator.PortInfo
+		ports []appstore.PortInfo
 		want  []port
 	}{
 		{
 			name:  "an app exposing no port",
-			ports: []orchestrator.PortInfo{},
+			ports: []appstore.PortInfo{},
 			want:  []port{},
 		},
 		{
 			name: "a webview port keeps reporting requires_display",
-			ports: []orchestrator.PortInfo{
+			ports: []appstore.PortInfo{
 				{Port: "7000", Source: "arduino:web_ui", RequiresDisplay: "webview"},
 			},
 			want: []port{{Port: "7000", Source: "arduino:web_ui", ServiceName: "webview"}},
 		},
 		{
 			name: "a port declared by the app.yaml has no service name",
-			ports: []orchestrator.PortInfo{
+			ports: []appstore.PortInfo{
 				{Port: "7000", Source: "app.yaml"},
 			},
 			want: []port{{Port: "7000", Source: "app.yaml"}},
 		},
 		{
 			name: "a port of a required service has no service name",
-			ports: []orchestrator.PortInfo{
+			ports: []appstore.PortInfo{
 				{Port: "8085", Source: "arduino:genie_audio"},
 			},
 			want: []port{{Port: "8085", Source: "arduino:genie_audio"}},

@@ -9,8 +9,8 @@ import (
 	"net/http"
 
 	"github.com/arduino/arduino-app-cli/internal/api/models"
-	"github.com/arduino/arduino-app-cli/internal/orchestrator"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/appid"
+	"github.com/arduino/arduino-app-cli/internal/orchestrator/appstore"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/bricksindex"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/config"
 	"github.com/arduino/arduino-app-cli/internal/render"
@@ -18,7 +18,7 @@ import (
 
 func HandleExamples(cfg config.Configuration, brickIndex *bricksindex.BricksIndex, idProvider *appid.Provider) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		examples, err := orchestrator.GetExamples(cfg, brickIndex, idProvider)
+		examples, err := appstore.GetExamples(cfg, brickIndex, idProvider)
 		if err != nil {
 			render.EncodeResponse(w, http.StatusInternalServerError, models.ErrorResponse{Details: err.Error()})
 			return

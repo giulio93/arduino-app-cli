@@ -44,14 +44,6 @@ func AIModelDownload(ctx context.Context, dockerClient command.Cli, modelsIndex 
 	return modelsIndex.DownloadByURL(ctx, modelRunner(dockerClient), modelURL, mmprojURL, plat, publish)
 }
 
-var (
-	ErrNotFound            = errors.New("model not found")
-	ErrConflict            = errors.New("can't delete the model")
-	ErrCannotRemoveModel   = errors.New("cannot remove a built-in model")
-	ErrInsufficientStorage = errors.New("insufficient storage to install the model")
-	ErrIncompleteImpulse   = errors.New("impulse not ready for deployment")
-)
-
 func AIModelDelete(ctx context.Context, dockerClient command.Cli, cfg config.Configuration, modelsIndex *modelsindex.ModelsIndex, bricksIndex *bricksindex.BricksIndex, platform platform.Platform, modelID string, idProvider *appid.Provider, force bool) (err error) {
 	res, err := modelsIndex.NewLookup().ByID(ctx, modelID)
 	if err != nil {

@@ -19,6 +19,7 @@ import (
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 
+	"github.com/arduino/arduino-app-cli/internal/api/boardhandlers"
 	"github.com/arduino/arduino-app-cli/internal/api/handlers"
 	"github.com/arduino/arduino-app-cli/internal/api/models"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator"
@@ -896,7 +897,7 @@ Contains a JSON object with the details of an error.
 			})(nil),
 			CustomSuccessResponse: &CustomResponseDef{
 				ContentType:   "text/event-stream",
-				DataStructure: handlers.ResponseLogs{},
+				DataStructure: boardhandlers.ResponseLogs{},
 			},
 			Description: "Obtain a ServerSentEvent stream of logs. It is possible to apply different filters.",
 			Summary:     "Get the logs of a running app",

@@ -5,5 +5,5 @@
 
 package handlers
 
-// queryTrue is the value that turns a boolean query parameter on.
-const queryTrue = "true"
+// QueryTrue is the value that turns a boolean query parameter on.
+const QueryTrue = "true"

@@ -13,16 +13,16 @@ import (
 	"net/http"
 
 	"github.com/arduino/arduino-app-cli/internal/api/models"
-	"github.com/arduino/arduino-app-cli/internal/orchestrator"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/app"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/appid"
+	"github.com/arduino/arduino-app-cli/internal/orchestrator/appstore"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/bricksindex"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/config"
 	"github.com/arduino/arduino-app-cli/internal/render"
 )
 
 func HandleAppDetails(
-	rt orchestrator.Runtime,
+	rt appstore.Runtime,
 	bricksIndex *bricksindex.BricksIndex,
 	idProvider *appid.Provider,
 	cfg config.Configuration,
@@ -41,7 +41,7 @@ func HandleAppDetails(
 			return
 		}
 
-		res, err := orchestrator.AppDetails(r.Context(), rt, app, bricksIndex, idProvider, cfg)
+		res, err := appstore.AppDetails(r.Context(), rt, app, bricksIndex, idProvider, cfg)
 		if err != nil {
 			slog.Error("Unable to parse the app.yaml", slog.String("error", err.Error()))
 			render.EncodeResponse(w, http.StatusInternalServerError, models.ErrorResponse{Details: "unable to find the app"})
@@ -59,7 +59,7 @@ type EditRequest struct {
 }
 
 func HandleAppDetailsEdits(
-	rt orchestrator.Runtime,
+	rt appstore.Runtime,
 	bricksIndex *bricksindex.BricksIndex,
 	idProvider *appid.Provider,
 	cfg config.Configuration,
@@ -77,7 +77,7 @@ func HandleAppDetailsEdits(
 			return
 		}
 
-		var appEditRequest orchestrator.AppEditRequest
+		var appEditRequest appstore.AppEditRequest
 		var editRequest EditRequest
 
 		if err := json.NewDecoder(r.Body).Decode(&editRequest); err != nil {
@@ -91,7 +91,7 @@ func HandleAppDetailsEdits(
 				render.EncodeResponse(w, http.StatusForbidden, models.ErrorResponse{Details: "you can patch just the default field for a release"})
 				return
 			}
-			appEditRequest = orchestrator.AppEditRequest{
+			appEditRequest = appstore.AppEditRequest{
 				Default: editRequest.Default,
 			}
 		case id.IsExample():
@@ -99,26 +99,26 @@ func HandleAppDetailsEdits(
 				render.EncodeResponse(w, http.StatusBadRequest, models.ErrorResponse{Details: "you can patch just the default field for example apps"})
 				return
 			}
-			appEditRequest = orchestrator.AppEditRequest{
+			appEditRequest = appstore.AppEditRequest{
 				Default: editRequest.Default,
 			}
 		default:
-			appEditRequest = orchestrator.AppEditRequest{
+			appEditRequest = appstore.AppEditRequest{
 				Default:     editRequest.Default,
 				Name:        editRequest.Name,
 				Icon:        editRequest.Icon,
 				Description: editRequest.Description,
 			}
 		}
-		err = orchestrator.EditApp(r.Context(), rt, appEditRequest, &appToEdit, cfg)
+		err = appstore.EditApp(r.Context(), rt, appEditRequest, &appToEdit, cfg)
 		if err != nil {
 			switch {
 			case errors.Is(err, app.ErrInvalidApp):
 				slog.Error("Unable to edit the app 1", slog.String("error", err.Error()))
 				render.EncodeResponse(w, http.StatusBadRequest, models.ErrorResponse{Details: err.Error()})
-			case errors.Is(err, orchestrator.ErrAppRunning):
+			case errors.Is(err, appstore.ErrAppRunning):
 				render.EncodeResponse(w, http.StatusConflict, models.ErrorResponse{Details: "stop the app before renaming it"})
-			case errors.Is(err, orchestrator.ErrAppAlreadyExists):
+			case errors.Is(err, appstore.ErrAppAlreadyExists):
 				slog.Error("The name is already in use.", slog.String("error", err.Error()))
 				render.EncodeResponse(w, http.StatusBadRequest, models.ErrorResponse{
 					Details: fmt.Sprintf("the name %q is already in use", *editRequest.Name),
@@ -130,7 +130,7 @@ func HandleAppDetailsEdits(
 			return
 		}
 
-		res, err := orchestrator.AppDetails(r.Context(), rt, appToEdit, bricksIndex, idProvider, cfg)
+		res, err := appstore.AppDetails(r.Context(), rt, appToEdit, bricksIndex, idProvider, cfg)
 		if err != nil {
 			slog.Error("Unable to parse the app.yaml", slog.String("error", err.Error()))
 			render.EncodeResponse(w, http.StatusInternalServerError, models.ErrorResponse{Details: "unable to find the app"})

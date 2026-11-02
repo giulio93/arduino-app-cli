@@ -13,9 +13,9 @@ import (
 	"net/http"
 
 	"github.com/arduino/arduino-app-cli/internal/api/models"
-	"github.com/arduino/arduino-app-cli/internal/orchestrator"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/app"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/appid"
+	"github.com/arduino/arduino-app-cli/internal/orchestrator/appstore"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/config"
 	"github.com/arduino/arduino-app-cli/internal/render"
 )
@@ -53,18 +53,18 @@ func HandleAppClone(
 			}
 		}
 
-		res, err := orchestrator.CloneApp(orchestrator.CloneAppRequest{
+		res, err := appstore.CloneApp(appstore.CloneAppRequest{
 			FromID: id,
 			Name:   req.Name,
 			Icon:   req.Icon,
 		}, idProvider, cfg)
 		if err != nil {
-			if errors.Is(err, orchestrator.ErrAppAlreadyExists) {
+			if errors.Is(err, appstore.ErrAppAlreadyExists) {
 				slog.Error("app already exists", slog.String("error", err.Error()))
 				render.EncodeResponse(w, http.StatusConflict, models.ErrorResponse{Details: "app already exists"})
 				return
 			}
-			if errors.Is(err, orchestrator.ErrAppDoesntExists) {
+			if errors.Is(err, appstore.ErrAppDoesntExists) {
 				slog.Error("app not found", slog.String("error", err.Error()))
 				render.EncodeResponse(w, http.StatusNotFound, models.ErrorResponse{Details: "app not found"})
 				return

@@ -77,6 +77,12 @@ var (
 	RequiredServices      = appstore.RequiredServices
 	ParseStatus           = appstore.ParseStatus
 
+	ErrNotFound            = appstore.ErrNotFound
+	ErrConflict            = appstore.ErrConflict
+	ErrCannotRemoveModel   = appstore.ErrCannotRemoveModel
+	ErrInsufficientStorage = appstore.ErrInsufficientStorage
+	ErrIncompleteImpulse   = appstore.ErrIncompleteImpulse
+
 	appSourceFilter = appstore.AppSourceFilter
 	redactSecrets   = appstore.RedactSecrets
 )

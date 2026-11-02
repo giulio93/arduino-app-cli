@@ -15,8 +15,8 @@ import (
 	"github.com/arduino/go-paths-helper"
 
 	"github.com/arduino/arduino-app-cli/internal/api/models"
-	"github.com/arduino/arduino-app-cli/internal/orchestrator"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/appid"
+	"github.com/arduino/arduino-app-cli/internal/orchestrator/appstore"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/config"
 	"github.com/arduino/arduino-app-cli/internal/render"
 )
@@ -56,14 +56,14 @@ func HandleAppImport(
 		}
 		tempFile.Close()
 
-		appID, err := orchestrator.ImportAppFromZip(cfg, tempFilePath, idProvider, header.Filename)
+		appID, err := appstore.ImportAppFromZip(cfg, tempFilePath, idProvider, header.Filename)
 		if err != nil {
 			slog.Error("import failed", "err", err)
 
 			switch {
-			case errors.Is(err, orchestrator.ErrAppAlreadyExists):
+			case errors.Is(err, appstore.ErrAppAlreadyExists):
 				render.EncodeResponse(w, http.StatusConflict, models.ErrorResponse{Details: err.Error()})
-			case errors.Is(err, orchestrator.ErrBadRequest) || strings.Contains(err.Error(), "not a valid zip file"):
+			case errors.Is(err, appstore.ErrBadRequest) || strings.Contains(err.Error(), "not a valid zip file"):
 				render.EncodeResponse(w, http.StatusBadRequest, models.ErrorResponse{Details: err.Error()})
 			default:
 				render.EncodeResponse(w, http.StatusInternalServerError, models.ErrorResponse{Details: "failed to process the archive: " + err.Error()})
