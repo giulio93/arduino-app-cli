@@ -24,7 +24,7 @@ type AppDetailedInfo struct {
 	Path         string             `json:"path"`
 	Description  string             `json:"description"`
 	Icon         string             `json:"icon"`
-	Status       Status             `json:"status" required:"true"`
+	Status       Status             `json:"status,omitempty" required:"true"`
 	Example      bool               `json:"example"`
 	Default      bool               `json:"default"`
 	Release      bool               `json:"release"`
