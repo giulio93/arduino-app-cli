@@ -3,13 +3,15 @@
 // SPDX-FileCopyrightText: Arduino s.r.l. and/or its affiliated companies
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-package handlers
+package boardhandlers
 
 import (
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+
+	"github.com/arduino/arduino-app-cli/internal/api/handlers"
 
 	"github.com/arduino/go-paths-helper"
 	"github.com/docker/cli/cli/command"
@@ -48,7 +50,7 @@ func HandleAppInstall(
 		defer file.Close()
 
 		queryParams := r.URL.Query()
-		prepare := queryParams.Get("prepare") == queryTrue
+		prepare := queryParams.Get("prepare") == handlers.QueryTrue
 
 		tempFile, err := paths.MkTempFile(nil, "app-install-*.tar.gz")
 		if err != nil {
@@ -85,7 +87,7 @@ func HandleAppInstall(
 			case orchestrator.ProgressType:
 				sseStream.Send(render.SSEEvent{Type: render.ProgressEvent, Data: progress(*item.GetProgress())})
 			case orchestrator.InfoType:
-				sseStream.Send(render.SSEEvent{Type: render.MessageEvent, Data: sseLog{Message: item.GetData()}})
+				sseStream.Send(render.SSEEvent{Type: render.MessageEvent, Data: handlers.SSELog{Message: item.GetData()}})
 			}
 		})
 		if err != nil {

@@ -12,8 +12,8 @@ import (
 	"strings"
 
 	"github.com/arduino/arduino-app-cli/internal/api/models"
-	"github.com/arduino/arduino-app-cli/internal/orchestrator"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/appid"
+	"github.com/arduino/arduino-app-cli/internal/orchestrator/appstore"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/bricksindex"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/config"
 	"github.com/arduino/arduino-app-cli/internal/platform"
@@ -21,12 +21,12 @@ import (
 )
 
 type AppListResponse struct {
-	Apps       []orchestrator.AppInfo       `json:"apps" description:"List of applications"`
-	BrokenApps []orchestrator.BrokenAppInfo `json:"broken_apps,omitempty" description:"List of applications that are broken and couldn't be parsed"`
+	Apps       []appstore.AppInfo       `json:"apps" description:"List of applications"`
+	BrokenApps []appstore.BrokenAppInfo `json:"broken_apps,omitempty" description:"List of applications that are broken and couldn't be parsed"`
 }
 
 func HandleAppList(
-	rt orchestrator.Runtime,
+	rt appstore.Runtime,
 	idProvider *appid.Provider,
 	bricksIndex *bricksindex.BricksIndex,
 	cfg config.Configuration,
@@ -44,9 +44,9 @@ func HandleAppList(
 			showReleases = slices.Contains(filters, "releases")
 		}
 
-		var statusFilter orchestrator.Status
+		var statusFilter appstore.Status
 		if status := queryParams.Get("status"); status != "" {
-			status, err := orchestrator.ParseStatus(status)
+			status, err := appstore.ParseStatus(status)
 			if err != nil {
 				render.EncodeResponse(w, http.StatusBadRequest, models.ErrorResponse{Details: "invalid status filter"})
 				return
@@ -54,7 +54,7 @@ func HandleAppList(
 			statusFilter = status
 		}
 
-		res, err := orchestrator.ListApps(r.Context(), rt, orchestrator.ListAppRequest{
+		res, err := appstore.ListApps(r.Context(), rt, appstore.ListAppRequest{
 			ShowApps:        showApps,
 			ShowExamples:    showExamples,
 			ShowReleases:    showReleases,

@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.bug.st/f"
 
+	"github.com/arduino/arduino-app-cli/internal/api/boardhandlers"
 	"github.com/arduino/arduino-app-cli/internal/api/handlers"
 	"github.com/arduino/arduino-app-cli/internal/api/models"
 	"github.com/arduino/arduino-app-cli/internal/e2e"
@@ -856,7 +857,7 @@ func TestAppLogs(t *testing.T) {
 			if event.Event != "message" {
 				continue
 			}
-			var payload handlers.ResponseLogs
+			var payload boardhandlers.ResponseLogs
 			require.NoError(t, json.Unmarshal(event.Data, &payload))
 			require.NotEmpty(t, payload.ID, "id must be set")
 			require.NotEmpty(t, payload.Message, "message must be set")
@@ -911,7 +912,7 @@ func TestAppStartBuildsLocalBrick(t *testing.T) {
 			if event.Event != "message" {
 				continue
 			}
-			var payload handlers.ResponseLogs
+			var payload boardhandlers.ResponseLogs
 			require.NoError(t, json.Unmarshal(event.Data, &payload))
 			if strings.Contains(payload.Message, message) {
 				return

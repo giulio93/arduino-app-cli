@@ -7,6 +7,7 @@ package appstore
 
 import (
 	"context"
+	"errors"
 	"slices"
 
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/modelsindex"
@@ -47,3 +48,11 @@ func AIModelDetails(ctx context.Context, modelsIndex *modelsindex.ModelsIndex, i
 	}
 	return *model, true, nil
 }
+
+var (
+	ErrNotFound            = errors.New("model not found")
+	ErrConflict            = errors.New("can't delete the model")
+	ErrCannotRemoveModel   = errors.New("cannot remove a built-in model")
+	ErrInsufficientStorage = errors.New("insufficient storage to install the model")
+	ErrIncompleteImpulse   = errors.New("impulse not ready for deployment")
+)

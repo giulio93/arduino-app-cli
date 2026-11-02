@@ -10,9 +10,9 @@ import (
 	"strconv"
 
 	"github.com/arduino/arduino-app-cli/internal/api/models"
-	"github.com/arduino/arduino-app-cli/internal/orchestrator"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/app"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/appid"
+	"github.com/arduino/arduino-app-cli/internal/orchestrator/appstore"
 	"github.com/arduino/arduino-app-cli/internal/render"
 
 	"go.bug.st/f"
@@ -37,17 +37,17 @@ func HandleSketchAddLibrary(idProvider *appid.Provider) http.HandlerFunc {
 		// Get query param addDeps (default false)
 		addDeps, _ := strconv.ParseBool(r.URL.Query().Get("add_deps"))
 
-		libRef, err := orchestrator.ParseLibraryReleaseID(r.PathValue("libRef"))
+		libRef, err := appstore.ParseLibraryReleaseID(r.PathValue("libRef"))
 		if err != nil {
 			render.EncodeResponse(w, http.StatusBadRequest, models.ErrorResponse{Details: "unable to parse library reference"})
 			return
 		}
-		if addedLibs, err := orchestrator.AddSketchLibrary(r.Context(), app, libRef, addDeps); err != nil {
+		if addedLibs, err := appstore.AddSketchLibrary(r.Context(), app, libRef, addDeps); err != nil {
 			render.EncodeResponse(w, http.StatusInternalServerError, models.ErrorResponse{Details: "unable to add sketch library: " + err.Error()})
 			return
 		} else {
 			render.EncodeResponse(w, http.StatusOK, SketchAddLibraryResponse{
-				AddedLibraries: f.Map(addedLibs, (orchestrator.LibraryReleaseID).String),
+				AddedLibraries: f.Map(addedLibs, (appstore.LibraryReleaseID).String),
 			})
 			return
 		}
@@ -75,7 +75,7 @@ func HandleSketchRemoveLibrary(idProvider *appid.Provider) http.HandlerFunc {
 			return
 		}
 
-		libRef, err := orchestrator.ParseLibraryReleaseID(r.PathValue("libRef"))
+		libRef, err := appstore.ParseLibraryReleaseID(r.PathValue("libRef"))
 		if err != nil {
 			render.EncodeResponse(w, http.StatusBadRequest, models.ErrorResponse{Details: "unable to parse library reference"})
 			return
@@ -83,12 +83,12 @@ func HandleSketchRemoveLibrary(idProvider *appid.Provider) http.HandlerFunc {
 
 		// Get query param addDeps (default false)
 		removeDeps, _ := strconv.ParseBool(r.URL.Query().Get("remove_deps"))
-		if removedLibs, err := orchestrator.RemoveSketchLibrary(r.Context(), app, libRef, removeDeps); err != nil {
+		if removedLibs, err := appstore.RemoveSketchLibrary(r.Context(), app, libRef, removeDeps); err != nil {
 			render.EncodeResponse(w, http.StatusInternalServerError, models.ErrorResponse{Details: "unable to remove sketch library: " + err.Error()})
 			return
 		} else {
 			render.EncodeResponse(w, http.StatusOK, SketchRemoveLibraryResponse{
-				RemovedLibraries: f.Map(removedLibs, (orchestrator.LibraryReleaseID).String),
+				RemovedLibraries: f.Map(removedLibs, (appstore.LibraryReleaseID).String),
 			})
 			return
 		}
@@ -113,17 +113,17 @@ func HandleSketchListLibraries(idProvider *appid.Provider) http.HandlerFunc {
 			return
 		}
 
-		allLibraries, err := orchestrator.ListSketchLibraries(r.Context(), app)
+		allLibraries, err := appstore.ListSketchLibraries(r.Context(), app)
 		if err != nil {
 			render.EncodeResponse(w, http.StatusInternalServerError, models.ErrorResponse{Details: "unable to list sketch libraries: " + err.Error()})
 			return
 		}
 
-		libs := f.Filter(allLibraries, func(l orchestrator.LibraryReleaseID) bool { return !l.IsDependency })
-		deps := f.Filter(allLibraries, func(l orchestrator.LibraryReleaseID) bool { return l.IsDependency })
+		libs := f.Filter(allLibraries, func(l appstore.LibraryReleaseID) bool { return !l.IsDependency })
+		deps := f.Filter(allLibraries, func(l appstore.LibraryReleaseID) bool { return l.IsDependency })
 		render.EncodeResponse(w, http.StatusOK, SketchListLibraryResponse{
-			Libraries:    f.Map(libs, (orchestrator.LibraryReleaseID).String),
-			Dependencies: f.Map(deps, (orchestrator.LibraryReleaseID).String),
+			Libraries:    f.Map(libs, (appstore.LibraryReleaseID).String),
+			Dependencies: f.Map(deps, (appstore.LibraryReleaseID).String),
 		})
 	}
 }

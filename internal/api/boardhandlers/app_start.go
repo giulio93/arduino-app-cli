@@ -3,34 +3,49 @@
 // SPDX-FileCopyrightText: Arduino s.r.l. and/or its affiliated companies
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-package handlers
+package boardhandlers
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
+
+	"github.com/arduino/arduino-app-cli/internal/api/handlers"
+
+	"github.com/docker/cli/cli/command"
 
 	"github.com/arduino/arduino-app-cli/internal/api/models"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/app"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/appid"
+	"github.com/arduino/arduino-app-cli/internal/orchestrator/bricksindex"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/config"
+	"github.com/arduino/arduino-app-cli/internal/orchestrator/modelsindex"
+	"github.com/arduino/arduino-app-cli/internal/orchestrator/servicesindex"
 	"github.com/arduino/arduino-app-cli/internal/platform"
 	"github.com/arduino/arduino-app-cli/internal/render"
-
-	"github.com/docker/cli/cli/command"
 )
 
-func HandleAppStop(
-	dockerClient command.Cli,
+func HandleAppStart(
+	dockerCli command.Cli,
+	provisioner *orchestrator.Provision,
+	modelsIndex *modelsindex.ModelsIndex,
+	bricksIndex *bricksindex.BricksIndex,
+	servicesIndex *servicesindex.ServicesIndex,
 	idProvider *appid.Provider,
-	platform platform.Platform,
 	cfg config.Configuration,
+	platform platform.Platform,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := idProvider.IDFromBase64(r.PathValue("appID"))
 		if err != nil {
 			render.EncodeResponse(w, http.StatusPreconditionFailed, models.ErrorResponse{Details: "invalid id"})
 			return
+		}
+
+		var verbose bool
+		if r.URL.Query().Has("verbose") || r.URL.Query().Get("verbose") == handlers.QueryTrue {
+			verbose = true
 		}
 
 		app, err := app.Load(id.ToPath())
@@ -55,17 +70,23 @@ func HandleAppStop(
 		type log struct {
 			Message string `json:"message"`
 		}
-		err = orchestrator.StopApp(r.Context(), dockerClient, platform, app, cfg, func(item orchestrator.StreamMessage) {
+		// An editable app is prepared by its start, downloading what it is missing; a
+		// release is not, so a start of one that is not prepared fails as not prepared.
+		prepare := !app.IsRelease()
+		if err := orchestrator.StartApp(r.Context(), dockerCli, provisioner, modelsIndex, bricksIndex, servicesIndex, app, cfg, platform, verbose, prepare, func(item orchestrator.StreamMessage) {
 			switch item.GetType() {
 			case orchestrator.ProgressType:
 				sseStream.Send(render.SSEEvent{Type: render.ProgressEvent, Data: progress(*item.GetProgress())})
 			case orchestrator.InfoType:
 				sseStream.Send(render.SSEEvent{Type: render.MessageEvent, Data: log{Message: item.GetData()}})
 			}
-		})
-		if err != nil {
+		}); err != nil {
+			code := render.InternalServiceErr
+			if errors.Is(err, orchestrator.ErrNotPrepared) {
+				code = render.NotPreparedErr
+			}
 			sseStream.SendError(render.SSEErrorData{
-				Code:    render.InternalServiceErr,
+				Code:    code,
 				Message: err.Error(),
 			})
 		}

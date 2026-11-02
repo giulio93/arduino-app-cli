@@ -13,9 +13,9 @@ import (
 	"strconv"
 
 	"github.com/arduino/arduino-app-cli/internal/api/models"
-	"github.com/arduino/arduino-app-cli/internal/orchestrator"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/app"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/appid"
+	"github.com/arduino/arduino-app-cli/internal/orchestrator/appstore"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/bricksindex"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/config"
 	"github.com/arduino/arduino-app-cli/internal/render"
@@ -47,8 +47,8 @@ func HandleAppCreate(
 			return
 		}
 
-		resp, err := orchestrator.CreateApp(
-			orchestrator.CreateAppRequest{
+		resp, err := appstore.CreateApp(
+			appstore.CreateAppRequest{
 				Name:        req.Name,
 				Icon:        req.Icon,
 				Description: req.Description,
@@ -60,7 +60,7 @@ func HandleAppCreate(
 		)
 		if err != nil {
 			switch {
-			case errors.Is(err, orchestrator.ErrAppAlreadyExists):
+			case errors.Is(err, appstore.ErrAppAlreadyExists):
 				slog.Error("app already exists", slog.String("error", err.Error()))
 				render.EncodeResponse(w, http.StatusConflict, models.ErrorResponse{Details: err.Error()})
 

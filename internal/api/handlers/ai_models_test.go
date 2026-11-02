@@ -6,6 +6,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/arduino/arduino-app-cli/internal/api/edgeimpulse"
 	"github.com/arduino/arduino-app-cli/internal/api/models"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/bricks"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/config"
@@ -53,7 +55,7 @@ func TestDownloadStream(t *testing.T) {
 		stream.publish(modelsindex.NewInfoMessage("Downloading to: /models/llamacpp", nil))
 
 		require.Equal(t, []string{"message"}, sse.types())
-		assert.Equal(t, sseLog{Message: "Downloading to: /models/llamacpp"}, sse.events[0].Data)
+		assert.Equal(t, SSELog{Message: "Downloading to: /models/llamacpp"}, sse.events[0].Data)
 	})
 
 	t.Run("a progress line reports the file name and a percentage", func(t *testing.T) {
@@ -113,7 +115,7 @@ func TestDownloadStream(t *testing.T) {
 		stream.publish(modelsindex.NewDoneMessage("download complete"))
 
 		require.Equal(t, []string{"message"}, sse.types())
-		assert.Equal(t, sseLog{Message: "download complete"}, sse.events[0].Data)
+		assert.Equal(t, SSELog{Message: "download complete"}, sse.events[0].Data)
 	})
 
 	t.Run("a full models directory carries its own code", func(t *testing.T) {
@@ -166,7 +168,7 @@ func TestHandleInstallModel(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPut, "/v1/models/"+unknown, nil)
 		req.SetPathValue("modelID", unknown)
 
-		HandleInstallModel(nil, testModelsIndex(t), platform.GetPlatform(nil))(rec, req)
+		HandleInstallModel(testInstaller(t), testModelsIndex(t))(rec, req)
 
 		assert.Equal(t, http.StatusNotFound, rec.Code)
 		assert.NotContains(t, rec.Header().Get("Content-Type"), "text/event-stream")
@@ -180,7 +182,7 @@ func TestHandleInstallModel(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPut, "/v1/models/"+models.EncodeModelID("a-preloaded-model"), nil)
 		req.SetPathValue("modelID", models.EncodeModelID("a-preloaded-model"))
 
-		HandleInstallModel(nil, testModelsIndex(t), platform.GetPlatform(nil))(rec, req)
+		HandleInstallModel(testInstaller(t), testModelsIndex(t))(rec, req)
 
 		assert.Contains(t, rec.Header().Get("Content-Type"), "text/event-stream")
 		body := rec.Body.String()
@@ -196,7 +198,7 @@ func TestHandleInstallModel(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPut, "/v1/models/"+models.EncodeModelID("a-preloaded-model"), nil)
 		req.SetPathValue("modelID", models.EncodeModelID("a-preloaded-model"))
 
-		HandleInstallModel(nil, testModelsIndex(t), platform.GetPlatform(nil))(rec, req)
+		HandleInstallModel(testInstaller(t), testModelsIndex(t))(rec, req)
 
 		body := rec.Body.String()
 		assert.Contains(t, body, "event: done")
@@ -210,7 +212,7 @@ func TestHandleInstallModel(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPut, "/v1/models/x", nil)
 		req.SetPathValue("modelID", "llamacpp:owner/repo")
 
-		HandleInstallModel(nil, testModelsIndex(t), platform.GetPlatform(nil))(rec, req)
+		HandleInstallModel(testInstaller(t), testModelsIndex(t))(rec, req)
 
 		assert.Equal(t, http.StatusBadRequest, rec.Code)
 		assert.Contains(t, rec.Body.String(), "base64url")
@@ -221,7 +223,7 @@ func TestHandleInstallModel(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPut, "/v1/models/x", nil)
 		req.SetPathValue("modelID", models.EncodeModelID("no-such-model"))
 
-		HandleInstallModel(nil, testModelsIndex(t), platform.GetPlatform(nil))(rec, req)
+		HandleInstallModel(testInstaller(t), testModelsIndex(t))(rec, req)
 
 		assert.Equal(t, http.StatusNotFound, rec.Code)
 	})
@@ -244,7 +246,7 @@ func TestHandleDownloadModel(t *testing.T) {
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/v1/models", strings.NewReader(tc.body))
 
-			HandleDownloadModel(nil, testModelsIndex(t), platform.GetPlatform(nil))(rec, req)
+			HandleDownloadModel(testInstaller(t))(rec, req)
 
 			assert.Equal(t, http.StatusBadRequest, rec.Code)
 			assert.NotContains(t, rec.Header().Get("Content-Type"), "text/event-stream")
@@ -335,4 +337,45 @@ func TestDecodeRequestModel(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "base64url")
 	})
+}
+
+// indexInstaller installs from a models index with no runner: what a declaration installs
+// works, a download fails.
+type indexInstaller struct {
+	idx  *modelsindex.ModelsIndex
+	plat platform.Platform
+}
+
+func testInstaller(t *testing.T) ModelInstaller {
+	return indexInstaller{idx: testModelsIndex(t), plat: platform.GetPlatform(nil)}
+}
+
+func (i indexInstaller) Install(ctx context.Context, id string, publish func(modelsindex.StreamMessage)) (modelsindex.AIModel, error) {
+	return i.idx.Install(ctx, nil, id, i.plat, publish)
+}
+
+func (i indexInstaller) Download(ctx context.Context, modelURL, mmprojURL string, publish func(modelsindex.StreamMessage)) (modelsindex.AIModel, error) {
+	return i.idx.DownloadByURL(ctx, nil, modelURL, mmprojURL, i.plat, publish)
+}
+
+func (indexInstaller) InstallEI(context.Context, *edgeimpulse.EIClient, int, int) (modelsindex.AIModel, error) {
+	return modelsindex.AIModel{}, modelsindex.ErrNoRunner
+}
+
+func (indexInstaller) Delete(context.Context, string, bool) error { return modelsindex.ErrNoRunner }
+
+func TestNilInstallerNeedsABoard(t *testing.T) {
+	for name, h := range map[string]http.HandlerFunc{
+		"install":    HandleInstallModel(nil, testModelsIndex(t)),
+		"download":   HandleDownloadModel(nil),
+		"install EI": HandleInstallEIModel(config.Configuration{}, nil),
+		"delete":     HandlerDeleteModelByID(nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			h(rec, httptest.NewRequest(http.MethodPut, "/v1/models/x", nil))
+			assert.Equal(t, http.StatusNotImplemented, rec.Code)
+			assert.Contains(t, rec.Body.String(), `"code":"needs_board"`)
+		})
+	}
 }

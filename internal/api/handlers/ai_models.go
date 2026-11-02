@@ -6,6 +6,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,22 +15,40 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/docker/cli/cli/command"
 	"go.bug.st/f"
 
 	"github.com/arduino/arduino-app-cli/internal/api/edgeimpulse"
 	"github.com/arduino/arduino-app-cli/internal/api/models"
-	"github.com/arduino/arduino-app-cli/internal/orchestrator"
-	"github.com/arduino/arduino-app-cli/internal/orchestrator/appid"
-	"github.com/arduino/arduino-app-cli/internal/orchestrator/bricksindex"
+	"github.com/arduino/arduino-app-cli/internal/orchestrator/appstore"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/config"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/modelsindex"
-	"github.com/arduino/arduino-app-cli/internal/platform"
 	"github.com/arduino/arduino-app-cli/internal/render"
 )
 
 type InstallEIModelRequest struct {
 	ImpulseID *int `json:"impulse_id" description:"Edge Impulse impulse ID" example:"1" required:"true"`
+}
+
+// ModelInstaller installs, downloads and deletes models. The daemon passes
+// orchestrator.NewModelInstaller; a nil one (boardless mode) answers 501 needs_board.
+type ModelInstaller interface {
+	Install(ctx context.Context, id string, publish func(modelsindex.StreamMessage)) (modelsindex.AIModel, error)
+	Download(ctx context.Context, modelURL, mmprojURL string, publish func(modelsindex.StreamMessage)) (modelsindex.AIModel, error)
+	InstallEI(ctx context.Context, eiClient *edgeimpulse.EIClient, projectID, impulseID int) (modelsindex.AIModel, error)
+	Delete(ctx context.Context, id string, force bool) error
+}
+
+// NeedsBoardCode is the error code of a route that needs a board.
+const NeedsBoardCode = "needs_board"
+
+// NeedsBoard answers a route that needs a board where there is none.
+func NeedsBoard() http.HandlerFunc { return needsBoard }
+
+func needsBoard(w http.ResponseWriter, r *http.Request) {
+	render.EncodeResponse(w, http.StatusNotImplemented, models.ErrorResponse{
+		Code:    NeedsBoardCode,
+		Details: "this needs a board: " + r.Pattern,
+	})
 }
 
 func HandleModelsList(modelsIndex *modelsindex.ModelsIndex) http.HandlerFunc {
@@ -38,7 +57,7 @@ func HandleModelsList(modelsIndex *modelsindex.ModelsIndex) http.HandlerFunc {
 		if bricks := strings.TrimSpace(r.URL.Query().Get("bricks")); bricks != "" {
 			brickFilter = strings.Split(bricks, ",")
 		}
-		list, err := orchestrator.AIModelsList(r.Context(), orchestrator.AIModelsListRequest{
+		list, err := appstore.AIModelsList(r.Context(), appstore.AIModelsListRequest{
 			FilterByBrickID: brickFilter,
 		}, modelsIndex)
 		if err != nil {
@@ -69,7 +88,7 @@ func HandlerModelByID(modelsIndex *modelsindex.ModelsIndex) http.HandlerFunc {
 			render.EncodeResponse(w, http.StatusBadRequest, models.ErrorResponse{Details: err.Error()})
 			return
 		}
-		model, found, err := orchestrator.AIModelDetails(r.Context(), modelsIndex, id)
+		model, found, err := appstore.AIModelDetails(r.Context(), modelsIndex, id)
 		if err != nil {
 			render.EncodeResponse(w, http.StatusInternalServerError, models.ErrorResponse{Details: err.Error()})
 			return
@@ -83,8 +102,12 @@ func HandlerModelByID(modelsIndex *modelsindex.ModelsIndex) http.HandlerFunc {
 	}
 }
 
-func HandlerDeleteModelByID(dockerClient command.Cli, cfg config.Configuration, modelsIndex *modelsindex.ModelsIndex, bricksIndex *bricksindex.BricksIndex, idProvider *appid.Provider, platform platform.Platform) http.HandlerFunc {
+func HandlerDeleteModelByID(installer ModelInstaller) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if installer == nil {
+			needsBoard(w, r)
+			return
+		}
 		id, err := modelIDFromPath(r)
 		if err != nil {
 			render.EncodeResponse(w, http.StatusBadRequest, models.ErrorResponse{Details: err.Error()})
@@ -96,14 +119,14 @@ func HandlerDeleteModelByID(dockerClient command.Cli, cfg config.Configuration, 
 			force = false
 		}
 
-		err = orchestrator.AIModelDelete(r.Context(), dockerClient, cfg, modelsIndex, bricksIndex, platform, id, idProvider, force)
+		err = installer.Delete(r.Context(), id, force)
 		if err != nil {
 			switch {
-			case errors.Is(err, orchestrator.ErrNotFound):
+			case errors.Is(err, appstore.ErrNotFound):
 				render.EncodeResponse(w, http.StatusNotFound, models.ErrorResponse{Details: err.Error()})
-			case errors.Is(err, orchestrator.ErrConflict):
+			case errors.Is(err, appstore.ErrConflict):
 				render.EncodeResponse(w, http.StatusConflict, models.ErrorResponse{Details: err.Error()})
-			case errors.Is(err, orchestrator.ErrCannotRemoveModel):
+			case errors.Is(err, appstore.ErrCannotRemoveModel):
 				render.EncodeResponse(w, http.StatusConflict, models.ErrorResponse{Details: err.Error()})
 			default:
 				render.EncodeResponse(w, http.StatusInternalServerError, models.ErrorResponse{Details: err.Error()})
@@ -115,8 +138,12 @@ func HandlerDeleteModelByID(dockerClient command.Cli, cfg config.Configuration, 
 	}
 }
 
-func HandleInstallEIModel(cfg config.Configuration, bricksIndex *bricksindex.BricksIndex, modelsIndex *modelsindex.ModelsIndex, dockerClient command.Cli, platform platform.Platform) http.HandlerFunc {
+func HandleInstallEIModel(cfg config.Configuration, installer ModelInstaller) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if installer == nil {
+			needsBoard(w, r)
+			return
+		}
 		projectID, err := strconv.Atoi(r.PathValue("projectID"))
 		if err != nil {
 			render.EncodeResponse(w, http.StatusBadRequest, models.ErrorResponse{Details: "invalid projectID"})
@@ -147,14 +174,14 @@ func HandleInstallEIModel(cfg config.Configuration, bricksIndex *bricksindex.Bri
 			return
 		}
 
-		eiModel, err := orchestrator.InstallEIModel(r.Context(), bricksIndex, modelsIndex, dockerClient, eiClient, cfg.EIModelsDir(), platform, projectID, *req.ImpulseID)
+		eiModel, err := installer.InstallEI(r.Context(), eiClient, projectID, *req.ImpulseID)
 		if err != nil {
 			switch {
 			case errors.Is(err, edgeimpulse.ErrUnauthorized):
 				slog.Error("unauthorized access to Edge Impulse model", slog.String("error", err.Error()))
 				render.EncodeResponse(w, http.StatusUnauthorized, models.ErrorResponse{Details: "unauthorized access to Edge Impulse model"})
 				return
-			case errors.Is(err, orchestrator.ErrIncompleteImpulse):
+			case errors.Is(err, appstore.ErrIncompleteImpulse):
 				slog.Error("incomplete impulse for Edge Impulse model", slog.String("error", err.Error()))
 				render.EncodeResponse(w, http.StatusBadRequest, models.ErrorResponse{Details: "incomplete impulse for Edge Impulse model"})
 				return
@@ -162,7 +189,7 @@ func HandleInstallEIModel(cfg config.Configuration, bricksIndex *bricksindex.Bri
 				slog.Error("forbidden access to Edge Impulse model", slog.String("error", err.Error()))
 				render.EncodeResponse(w, http.StatusForbidden, models.ErrorResponse{Details: "forbidden access to Edge Impulse model"})
 				return
-			case errors.Is(err, orchestrator.ErrInsufficientStorage):
+			case errors.Is(err, appstore.ErrInsufficientStorage):
 				slog.Error("insufficient storage to install Edge Impulse model", slog.String("error", err.Error()))
 				render.EncodeResponse(w, http.StatusInsufficientStorage, models.ErrorResponse{Details: "insufficient storage to install Edge Impulse model"})
 				return
@@ -192,14 +219,18 @@ type sseProgress struct {
 	Progress float32 `json:"progress"`
 }
 
-type sseLog struct {
+type SSELog struct {
 	Message string `json:"message"`
 }
 
 // HandleInstallModel installs a model from the internal model list. HandleDownloadModel
 // downloads a model that no entry declares.
-func HandleInstallModel(dockerClient command.Cli, modelsIndex *modelsindex.ModelsIndex, plat platform.Platform) http.HandlerFunc {
+func HandleInstallModel(installer ModelInstaller, modelsIndex *modelsindex.ModelsIndex) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if installer == nil {
+			needsBoard(w, r)
+			return
+		}
 		id, err := modelIDFromPath(r)
 		if err != nil {
 			render.EncodeResponse(w, http.StatusBadRequest, models.ErrorResponse{Details: err.Error()})
@@ -222,7 +253,7 @@ func HandleInstallModel(dockerClient command.Cli, modelsIndex *modelsindex.Model
 		defer sseStream.Close()
 
 		stream := &downloadStream{sse: sseStream}
-		installed, err := orchestrator.AIModelInstall(r.Context(), dockerClient, modelsIndex, plat, id, stream.publish)
+		installed, err := installer.Install(r.Context(), id, stream.publish)
 		if err != nil {
 			stream.sendError(err)
 			return
@@ -238,8 +269,12 @@ type DownloadModelRequest struct {
 
 // HandleDownloadModel downloads a model that no models-list.yaml entry declares. The id is
 // not an input: the downloader makes it from the file that arrives, and reports it.
-func HandleDownloadModel(dockerClient command.Cli, modelsIndex *modelsindex.ModelsIndex, plat platform.Platform) http.HandlerFunc {
+func HandleDownloadModel(installer ModelInstaller) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if installer == nil {
+			needsBoard(w, r)
+			return
+		}
 		var req DownloadModelRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			render.EncodeResponse(w, http.StatusBadRequest, models.ErrorResponse{Details: "unable to decode download model request"})
@@ -260,7 +295,7 @@ func HandleDownloadModel(dockerClient command.Cli, modelsIndex *modelsindex.Mode
 		defer sseStream.Close()
 
 		stream := &downloadStream{sse: sseStream}
-		installed, err := orchestrator.AIModelDownload(r.Context(), dockerClient, modelsIndex, plat, modelURL, strings.TrimSpace(req.MmprojURL), stream.publish)
+		installed, err := installer.Download(r.Context(), modelURL, strings.TrimSpace(req.MmprojURL), stream.publish)
 		if err != nil {
 			stream.sendError(err)
 			return
@@ -285,7 +320,7 @@ type downloadStream struct {
 func (d *downloadStream) publish(e modelsindex.StreamMessage) {
 	switch e.GetType() {
 	case modelsindex.InfoType:
-		d.sse.Send(render.SSEEvent{Type: render.MessageEvent, Data: sseLog{Message: e.GetData()}})
+		d.sse.Send(render.SSEEvent{Type: render.MessageEvent, Data: SSELog{Message: e.GetData()}})
 	case modelsindex.ProgressType:
 		p := e.GetProgress()
 		var progress float32
@@ -302,7 +337,7 @@ func (d *downloadStream) publish(e modelsindex.StreamMessage) {
 			d.sse.SendError(render.SSEErrorData{Code: render.InternalServiceErr, Message: e.GetError()})
 		}
 	case modelsindex.DoneType:
-		d.sse.Send(render.SSEEvent{Type: render.MessageEvent, Data: sseLog{Message: e.GetDone()}})
+		d.sse.Send(render.SSEEvent{Type: render.MessageEvent, Data: SSELog{Message: e.GetDone()}})
 	}
 }
 
