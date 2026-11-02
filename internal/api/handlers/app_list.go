@@ -11,8 +11,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/docker/cli/cli/command"
-
 	"github.com/arduino/arduino-app-cli/internal/api/models"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/appid"
@@ -28,7 +26,7 @@ type AppListResponse struct {
 }
 
 func HandleAppList(
-	dockerCli command.Cli,
+	rt orchestrator.Runtime,
 	idProvider *appid.Provider,
 	bricksIndex *bricksindex.BricksIndex,
 	cfg config.Configuration,
@@ -56,7 +54,7 @@ func HandleAppList(
 			statusFilter = status
 		}
 
-		res, err := orchestrator.ListApps(r.Context(), dockerCli, orchestrator.ListAppRequest{
+		res, err := orchestrator.ListApps(r.Context(), rt, orchestrator.ListAppRequest{
 			ShowApps:        showApps,
 			ShowExamples:    showExamples,
 			ShowReleases:    showReleases,

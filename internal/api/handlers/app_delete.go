@@ -9,8 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/docker/cli/cli/command"
-
 	"github.com/arduino/arduino-app-cli/internal/api/models"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/app"
@@ -21,7 +19,7 @@ import (
 )
 
 func HandleAppDelete(
-	dockerClient command.Cli,
+	rt orchestrator.Runtime,
 	idProvider *appid.Provider,
 	platform platform.Platform,
 	cfg config.Configuration,
@@ -44,7 +42,7 @@ func HandleAppDelete(
 			return
 		}
 
-		err = orchestrator.DeleteApp(r.Context(), dockerClient, platform, app, cfg)
+		err = orchestrator.DeleteApp(r.Context(), rt, platform, app, cfg)
 		if err != nil {
 			slog.Error("Unable to delete the app", slog.String("error", err.Error()))
 			render.EncodeResponse(w, http.StatusInternalServerError, models.ErrorResponse{Details: "unable to delete the app"})

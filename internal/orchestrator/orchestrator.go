@@ -457,7 +457,7 @@ func StartDefaultApp(
 		return nil
 	}
 
-	status, err := AppDetails(ctx, docker, *app, bricksIndex, idProvider, cfg)
+	status, err := AppDetails(ctx, NewDockerRuntime(docker), *app, bricksIndex, idProvider, cfg)
 	if err != nil {
 		return fmt.Errorf("failed to get app details: %w", err)
 	}
@@ -509,7 +509,7 @@ type ListAppRequest struct {
 
 func ListApps(
 	ctx context.Context,
-	docker command.Cli,
+	rt Runtime,
 	req ListAppRequest,
 	idProvider *appid.Provider,
 	bricksIndex *bricksindex.BricksIndex,
@@ -523,9 +523,12 @@ func ListApps(
 	}
 
 	// Get the status of all apps (it will return only the apps that have been started at least once)
-	appsStatus, err := getAppsStatus(ctx, docker.Client())
-	if err != nil {
-		slog.Error("unable to get running app", slog.String("error", err.Error()))
+	var appsStatus []AppStatusInfo
+	if rt != nil {
+		appsStatus, err = rt.AppsStatus(ctx)
+		if err != nil {
+			slog.Error("unable to get running app", slog.String("error", err.Error()))
+		}
 	}
 
 	// Retrieve all apps from the filesystem
@@ -567,7 +570,10 @@ func ListApps(
 		}
 
 		// Retrieve the app status if available
-		status := StatusUninitialized
+		var status Status
+		if rt != nil {
+			status = StatusUninitialized
+		}
 		if idx := slices.IndexFunc(appsStatus, func(a AppStatusInfo) bool {
 			return a.AppPath.EqualsTo(app.FullPath)
 		}); idx != -1 {
@@ -705,7 +711,7 @@ type AppDetailedBrick struct {
 
 func AppDetails(
 	ctx context.Context,
-	docker command.Cli,
+	rt Runtime,
 	userApp app.ArduinoApp,
 	bricksIndex *bricksindex.BricksIndex,
 	idProvider *appid.Provider,
@@ -718,7 +724,10 @@ func AppDetails(
 	var status Status
 	go func() {
 		defer wg.Done()
-		app, err := getAppStatus(ctx, docker.Client(), userApp)
+		if rt == nil {
+			return
+		}
+		app, err := rt.AppStatus(ctx, userApp)
 		if err != nil {
 			slog.Warn("unable to get app status", slog.String("error", err.Error()), slog.String("path", userApp.FullPath.String()))
 			status = StatusStopped
@@ -942,10 +951,12 @@ func CloneApp(
 	return CloneAppResponse{ID: id}, nil
 }
 
-func DeleteApp(ctx context.Context, dockerClient command.Cli, platform platform.Platform, app app.ArduinoApp, cfg config.Configuration) error {
+func DeleteApp(ctx context.Context, rt Runtime, platform platform.Platform, app app.ArduinoApp, cfg config.Configuration) error {
 	// We try to remove docker related resources at best effort
-	_ = StopAndDestroyApp(ctx, dockerClient, platform, app, cfg, func(StreamMessage) {})
-	// TODO: Shall we report stop error?
+	if rt != nil {
+		_ = rt.StopAndDestroy(ctx, platform, app, cfg)
+		// TODO: Shall we report stop error?
+	}
 
 	if err := app.FullPath.RemoveAll(); err != nil {
 		return err
@@ -1011,7 +1022,7 @@ type AppEditRequest struct {
 
 func EditApp(
 	ctx context.Context,
-	docker command.Cli,
+	rt Runtime,
 	req AppEditRequest,
 	editApp *app.ArduinoApp,
 	cfg config.Configuration,
@@ -1020,9 +1031,9 @@ func EditApp(
 		return fmt.Errorf("%w: invalid app name %q", app.ErrInvalidApp, *req.Name)
 	}
 
-	if req.Name != nil {
+	if req.Name != nil && rt != nil {
 		// Containers keep the old app path in their labels: renaming a running app breaks them.
-		status, err := getAppStatus(ctx, docker.Client(), *editApp)
+		status, err := rt.AppStatus(ctx, *editApp)
 		if err != nil {
 			return fmt.Errorf("failed to get app status: %w", err)
 		}
