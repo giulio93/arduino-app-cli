@@ -372,7 +372,7 @@ func targetIndexes(cfg config.Configuration, docker command.Cli, target string) 
 	if err != nil {
 		return platform.Platform{}, nil, nil, nil, fmt.Errorf("failed to load the services index of %s: %w", plat.BoardName, err)
 	}
-	modelsIndex, err := modelsindex.Load(plat, cfg.AssetDir(), cfg.ModelsDir(), cfg.CustomModelsDir(), docker.Client(), cfg)
+	modelsIndex, err := modelsindex.Load(plat, cfg.AssetDir(), cfg.ModelsDir(), cfg.CustomModelsDir(), modelRunner(docker), cfg)
 	if err != nil {
 		return platform.Platform{}, nil, nil, nil, fmt.Errorf("failed to load the models index of %s: %w", plat.BoardName, err)
 	}

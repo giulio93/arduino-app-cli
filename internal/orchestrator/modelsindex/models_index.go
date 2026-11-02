@@ -15,11 +15,8 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/docker/cli/cli/command"
-	"github.com/moby/moby/client"
 	"github.com/shirou/gopsutil/v4/disk"
 
-	"github.com/arduino/arduino-app-cli/internal/dockerhelper"
 	"github.com/arduino/arduino-app-cli/internal/helpers"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/config"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/modelsindex/custommodel"
@@ -146,7 +143,7 @@ type ModelsIndex struct {
 	modelsDir       *paths.Path
 	customModelsDir *paths.Path
 	Handlers        *HandlersIndex
-	cli             client.APIClient
+	run             Runner
 	plat            platform.Platform
 }
 
@@ -253,10 +250,10 @@ func (m AIModel) NeedsNoDownload() bool {
 
 func (m *ModelsIndex) listModels(ctx context.Context) ([]AIModel, error) {
 	known := m.loadDryModels()
-	if m.Handlers == nil || m.cli == nil {
+	if m.Handlers == nil || m.run == nil {
 		return known, nil
 	}
-	models, err := m.Handlers.getModelsInfo(ctx, m.cli, known)
+	models, err := m.Handlers.getModelsInfo(ctx, m.run, known)
 	if err != nil {
 		return known, err
 	}
@@ -274,7 +271,7 @@ func (m *ModelsIndex) loadDryModels() []AIModel {
 
 // Load constructs a ModelsIndex. Pass the result of LoadHandlers as handlers;
 // nil is accepted and disables handler-backed status checks.
-func Load(plat platform.Platform, dir *paths.Path, modelsDir *paths.Path, customModelsDir *paths.Path, cli client.APIClient, cfg config.Configuration) (*ModelsIndex, error) {
+func Load(plat platform.Platform, dir *paths.Path, modelsDir *paths.Path, customModelsDir *paths.Path, run Runner, cfg config.Configuration) (*ModelsIndex, error) {
 	if dir == nil || modelsDir == nil {
 		return &ModelsIndex{}, errors.New("either dir or modelsDir must be provided")
 	}
@@ -300,7 +297,7 @@ func Load(plat platform.Platform, dir *paths.Path, modelsDir *paths.Path, custom
 		customModelsDir: customModelsDir,
 		modelsDir:       modelsDir,
 		Handlers:        handlers,
-		cli:             cli,
+		run:             run,
 		plat:            plat,
 	}, nil
 }
@@ -432,7 +429,7 @@ func loadCustomModels(dir *paths.Path) ([]AIModel, error) {
 // The id is not an input: the downloader makes it from the file that arrives, with the same
 // rule as the listing, and reports it on the stream. The id contains the repository
 // directory, so two owners with the same file name stay two models.
-func (m *ModelsIndex) DownloadByURL(ctx context.Context, cli client.APIClient, modelURL, mmprojURL string, plat platform.Platform, publish func(e StreamMessage)) (AIModel, error) {
+func (m *ModelsIndex) DownloadByURL(ctx context.Context, run Runner, modelURL, mmprojURL string, plat platform.Platform, publish func(e StreamMessage)) (AIModel, error) {
 	variables := map[string]string{
 		"model_url": modelURL,
 		// Fixed, not taken from the caller: it is the only directory the listing scans for
@@ -443,7 +440,7 @@ func (m *ModelsIndex) DownloadByURL(ctx context.Context, cli client.APIClient, m
 		variables["model_mmproj_url"] = mmprojURL
 	}
 
-	downloaded, err := m.runDownload(ctx, cli, AIModel{
+	downloaded, err := m.runDownload(ctx, run, AIModel{
 		Deployment: &ModelDeployment{
 			Handler: hfHandlerID,
 			Variables: []map[string]PlatformDeploymentConfig{
@@ -489,7 +486,7 @@ func (m *ModelsIndex) known(id string) (*AIModel, bool) {
 // installed. The declaration describes it; only the size comes from what landed.
 //
 // A model installed by its declaration is returned as it is: there is nothing to fetch.
-func (m *ModelsIndex) Install(ctx context.Context, dockerClient command.Cli, id string, plat platform.Platform, publish func(e StreamMessage)) (AIModel, error) {
+func (m *ModelsIndex) Install(ctx context.Context, run Runner, id string, plat platform.Platform, publish func(e StreamMessage)) (AIModel, error) {
 	model, found := m.known(id)
 	if !found {
 		return AIModel{}, fmt.Errorf("no model with id %q: %w", id, ErrUnknownModel)
@@ -500,7 +497,7 @@ func (m *ModelsIndex) Install(ctx context.Context, dockerClient command.Cli, id 
 		return *model, nil
 	}
 
-	downloaded, err := m.runDownload(ctx, dockerClient.Client(), *model, plat, publish)
+	downloaded, err := m.runDownload(ctx, run, *model, plat, publish)
 	if err != nil {
 		return AIModel{}, err
 	}
@@ -514,12 +511,15 @@ func (m *ModelsIndex) Install(ctx context.Context, dockerClient command.Cli, id 
 
 // runDownload runs one handler's download action and keeps the model its stream names. An
 // error event ends the run as ErrDownloadReported: publish has already carried it out.
-func (m *ModelsIndex) runDownload(ctx context.Context, cli client.APIClient, model AIModel, plat platform.Platform, publish func(e StreamMessage)) (*DownloadedModel, error) {
+func (m *ModelsIndex) runDownload(ctx context.Context, run Runner, model AIModel, plat platform.Platform, publish func(e StreamMessage)) (*DownloadedModel, error) {
 	if model.NeedsNoDownload() {
 		// Guarded here too: the alternative is dereferencing a nil Deployment.
 		return nil, fmt.Errorf("model %q has nothing to download: %w", model.ID, ErrNoHandler)
 	}
 
+	if run == nil {
+		return nil, ErrNoRunner
+	}
 	if m.Handlers == nil {
 		return nil, fmt.Errorf("no handlers are configured: %w", ErrNoHandler)
 	}
@@ -532,7 +532,7 @@ func (m *ModelsIndex) runDownload(ctx context.Context, cli client.APIClient, mod
 	maps.Insert(envVars, maps.All(m.Handlers.configEnv))
 
 	if model.Size == 0 {
-		if s, ok, err := getModelSize(ctx, cli, handler, envVars); err != nil {
+		if s, ok, err := getModelSize(ctx, run, handler, envVars); err != nil {
 			slog.Warn("info action failed, downloading unchecked", "err", err)
 		} else if ok {
 			model.Size = s
@@ -540,7 +540,7 @@ func (m *ModelsIndex) runDownload(ctx context.Context, cli client.APIClient, mod
 	}
 
 	if err := hasSufficientDiskSpace(m.modelsDir, model.Size); err != nil {
-		if !isModelInstalled(ctx, cli, handler, envVars) {
+		if !isModelInstalled(ctx, run, handler, envVars) {
 			return nil, err
 		}
 		slog.Debug("model already installed, disk check skipped", "model", model.ID)
@@ -549,7 +549,7 @@ func (m *ModelsIndex) runDownload(ctx context.Context, cli client.APIClient, mod
 	var downloaded *DownloadedModel
 	var errorReported bool
 	var lastPercent helpers.LastPercent
-	err := dockerhelper.Run(ctx, cli, dockerhelper.RunOptions{
+	err := run.Run(ctx, RunOptions{
 		Image: ResolveVars(handler.Image, envVars),
 		Cmd:   handler.Actions.Download,
 		Binds: ResolveVarsSlice(handler.Volumes, envVars),
@@ -585,14 +585,14 @@ func (m *ModelsIndex) runDownload(ctx context.Context, cli client.APIClient, mod
 	return downloaded, nil
 }
 
-func (m *ModelsIndex) Delete(ctx context.Context, dockerClient command.Cli, platform platform.Platform, model AIModel) error {
+func (m *ModelsIndex) Delete(ctx context.Context, run Runner, platform platform.Platform, model AIModel) error {
 	if model.Deployment != nil && model.Deployment.Handler != "" {
 		// Internal model: run the delete action using the handler.
 		handler, ok := m.Handlers.GetHandlerByID(model.Deployment.Handler)
 		if !ok {
 			return fmt.Errorf("handler %q not found for model %q", model.Deployment.Handler, model.ID)
 		}
-		if err := deleteInternalModel(ctx, dockerClient.Client(), model, handler, platform, m.Handlers.configEnv); err != nil {
+		if err := deleteInternalModel(ctx, run, model, handler, platform, m.Handlers.configEnv); err != nil {
 			return fmt.Errorf("delete action: %w", err)
 		}
 	} else {
@@ -611,9 +611,12 @@ func (m *ModelsIndex) Delete(ctx context.Context, dockerClient command.Cli, plat
 var (
 	ErrInsufficientStorage = errors.New("insufficient storage to install model")
 	ErrNoHandler           = errors.New("no handler to run")
-	ErrUnknownModel        = errors.New("model not in the internal model list")
-	ErrNoModelReported     = errors.New("download named no model: a newer models-downloader image is required")
-	ErrNotListed           = errors.New("model not listed")
+	// ErrNoRunner is the answer to an install, download or delete where no handler can
+	// run: a boardless index has its catalog only.
+	ErrNoRunner        = errors.New("models need a board")
+	ErrUnknownModel    = errors.New("model not in the internal model list")
+	ErrNoModelReported = errors.New("download named no model: a newer models-downloader image is required")
+	ErrNotListed       = errors.New("model not listed")
 	// ErrDownloadReported ends a download whose handler reported an error event, which
 	// publish has already carried to the caller.
 	ErrDownloadReported = errors.New("the download reported an error")

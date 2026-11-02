@@ -8,6 +8,8 @@ package orchestrator
 import (
 	"log/slog"
 
+	"github.com/arduino/arduino-app-cli/internal/orchestrator/modelsindex/dockerrunner"
+
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/app"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/config"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/modelsindex"
@@ -38,7 +40,16 @@ func releaseModels(a *app.ArduinoApp, docker command.Cli, cfg config.Configurati
 		a.ProvisioningStateDir(),
 		cfg.ModelsDir(),
 		cfg.CustomModelsDir(),
-		docker.Client(),
+		modelRunner(docker),
 		cfg,
 	)
+}
+
+// modelRunner runs the model handlers on docker. A nil docker, as tests and callers with
+// nothing to download pass, runs none.
+func modelRunner(docker command.Cli) modelsindex.Runner {
+	if docker == nil {
+		return nil
+	}
+	return dockerrunner.New(docker.Client())
 }
