@@ -7,7 +7,6 @@ package config
 
 import (
 	"cmp"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -171,55 +170,6 @@ func NewFromEnv() (Configuration, error) {
 	}
 
 	return c, nil
-}
-
-// Layout is the directories a Host with no board states, instead of the environment and
-// the board's fixed paths that NewFromEnv reads.
-type Layout struct {
-	// AppsDir is where the apps live: the Local workspace.
-	AppsDir *paths.Path
-	// DataDir holds the properties, the staging area and the examples (DataDir/examples).
-	DataDir *paths.Path
-	// AssetsDir is the bricks, models and services catalog.
-	AssetsDir *paths.Path
-	// CustomModelsDir holds the custom models. Empty means DataDir/custom-models.
-	CustomModelsDir *paths.Path
-}
-
-// New returns the configuration of a Host with no board, from l and NewFromEnv's
-// defaults. It reads no environment variable.
-func New(l Layout) (Configuration, error) {
-	if l.AppsDir == nil || l.DataDir == nil || l.AssetsDir == nil {
-		return Configuration{}, errors.New("apps, data and assets directories are required")
-	}
-	librariesAPIURL, err := url.Parse("https://api2.arduino.cc/libraries/v1/libraries")
-	if err != nil {
-		return Configuration{}, err
-	}
-	edgeImpulseAPIURL, err := url.Parse("https://studio.edgeimpulse.com/v1")
-	if err != nil {
-		return Configuration{}, err
-	}
-	constraint, err := semver.ParseConstraint("<2.0.0-0")
-	if err != nil {
-		return Configuration{}, err
-	}
-	customModelsDir := l.CustomModelsDir
-	if customModelsDir == nil {
-		customModelsDir = l.DataDir.Join("custom-models")
-	}
-	return Configuration{
-		appsDir:                          l.AppsDir,
-		dataDir:                          l.DataDir,
-		releasesDir:                      l.DataDir.Join("releases"),
-		customModelsDir:                  customModelsDir,
-		modelsDir:                        l.DataDir.Join("models"),
-		assetDir:                         l.AssetsDir,
-		RunnerVersion:                    RunnerVersion,
-		LibrariesAPIURL:                  librariesAPIURL,
-		EdgeImpulseAPIURL:                edgeImpulseAPIURL,
-		ArduinoPlatformVersionConstraint: constraint,
-	}, nil
 }
 
 // EnsureFolders creates the folders required by arduino-app-cli.

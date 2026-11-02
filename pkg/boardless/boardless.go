@@ -29,21 +29,10 @@ import (
 	"github.com/arduino/arduino-app-cli/internal/platform"
 )
 
-// Options is what the Host states: the handler reads no environment variable and no
-// board file.
+// Options is what the Host states besides the directories.
 type Options struct {
 	// Board is the Virtual board's type: "unoq" or "ventunoq". Empty means "unoq".
 	Board string
-	// AppsDir is the Local workspace, where the apps live. Created if missing.
-	AppsDir string
-	// DataDir holds the properties and the staging area, and the examples catalog in
-	// DataDir/examples. Created if missing.
-	DataDir string
-	// AssetsDir is the bricks, models and services catalog, as the board's package
-	// installs it.
-	AssetsDir string
-	// CustomModelsDir holds the custom models. Empty means DataDir/custom-models.
-	CustomModelsDir string
 	// Version is what GET /v1/version answers.
 	Version string
 }
@@ -51,8 +40,16 @@ type Options struct {
 // ErrUnknownBoard is returned for an Options.Board that is not a supported board.
 var ErrUnknownBoard = errors.New("unknown board")
 
-// NewHandler returns the Boardless API for o. A missing or broken catalog is an error,
-// not a panic.
+// NewHandler returns the Boardless API for o. The directories come from the environment
+// variables the board daemon reads, which the Host sets (on js, through go.env):
+//
+//   - ARDUINO_APP_CLI__APPS_DIR: the Local workspace, where the apps live.
+//   - ARDUINO_APP_CLI__DATA_DIR: properties, staging, the examples in DATA_DIR/examples
+//     and the catalog in DATA_DIR/assets/<runner version>, as on a board.
+//   - ARDUINO_APP_BRICKS__CUSTOM_MODEL_DIR: the custom models. Unset means $HOME/.arduino-bricks/models.
+//
+// The apps and data directories are created if missing. A missing or broken catalog is
+// an error, not a panic.
 func NewHandler(o Options) (http.Handler, error) {
 	if o.Board == "" {
 		o.Board = platform.BoardUnoQ
@@ -61,19 +58,7 @@ func NewHandler(o Options) (http.Handler, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w %q: supported are %v", ErrUnknownBoard, o.Board, platform.SupportedBoards())
 	}
-	if o.AppsDir == "" || o.DataDir == "" || o.AssetsDir == "" {
-		return nil, errors.New("AppsDir, DataDir and AssetsDir are required")
-	}
-
-	layout := config.Layout{
-		AppsDir:   paths.New(o.AppsDir),
-		DataDir:   paths.New(o.DataDir),
-		AssetsDir: paths.New(o.AssetsDir),
-	}
-	if o.CustomModelsDir != "" {
-		layout.CustomModelsDir = paths.New(o.CustomModelsDir)
-	}
-	cfg, err := config.New(layout)
+	cfg, err := config.NewFromEnv()
 	if err != nil {
 		return nil, err
 	}

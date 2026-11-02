@@ -20,23 +20,34 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/arduino/arduino-app-cli/internal/orchestrator/config"
 	"github.com/arduino/arduino-app-cli/pkg/boardless"
+	"github.com/arduino/go-paths-helper"
 )
 
-func newServer(t *testing.T) (*httptest.Server, boardless.Options) {
+// setEnv points the handler at a fresh workspace, with the testdata catalog where the
+// board keeps it, and returns the apps directory.
+func setEnv(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	o := boardless.Options{
-		AppsDir:   filepath.Join(dir, "ArduinoApps"),
-		DataDir:   filepath.Join(dir, "data"),
-		AssetsDir: "testdata/assets",
-		Version:   "test",
-	}
-	h, err := boardless.NewHandler(o)
+	appsDir := filepath.Join(dir, "ArduinoApps")
+	t.Setenv("ARDUINO_APP_CLI__APPS_DIR", appsDir)
+	t.Setenv("ARDUINO_APP_CLI__DATA_DIR", filepath.Join(dir, "data"))
+	t.Setenv("ARDUINO_APP_BRICKS__CUSTOM_MODEL_DIR", filepath.Join(dir, "custom-models"))
+	cfg, err := config.NewFromEnv()
+	require.NoError(t, err)
+	require.NoError(t, paths.New("testdata", "assets").CopyDirTo(cfg.AssetDir()))
+	return appsDir
+}
+
+func newServer(t *testing.T) (*httptest.Server, string) {
+	t.Helper()
+	appsDir := setEnv(t)
+	h, err := boardless.NewHandler(boardless.Options{Version: "test"})
 	require.NoError(t, err)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return srv, o
+	return srv, appsDir
 }
 
 func do(t *testing.T, srv *httptest.Server, method, path string, body any) (int, []byte) {
@@ -70,29 +81,22 @@ func createApp(t *testing.T, srv *httptest.Server, name string) string {
 }
 
 func TestNewHandlerErrors(t *testing.T) {
-	dir := t.TempDir()
-	ok := boardless.Options{AppsDir: filepath.Join(dir, "a"), DataDir: filepath.Join(dir, "d"), AssetsDir: "testdata/assets"}
-
 	t.Run("unknown board", func(t *testing.T) {
-		o := ok
-		o.Board = "mega"
-		_, err := boardless.NewHandler(o)
+		setEnv(t)
+		_, err := boardless.NewHandler(boardless.Options{Board: "mega"})
 		require.ErrorIs(t, err, boardless.ErrUnknownBoard)
 	})
-	t.Run("missing directories", func(t *testing.T) {
-		_, err := boardless.NewHandler(boardless.Options{AssetsDir: "testdata/assets"})
-		require.Error(t, err)
-	})
 	t.Run("missing catalog is an error, not a panic", func(t *testing.T) {
-		o := ok
-		o.AssetsDir = filepath.Join(dir, "no-assets")
-		_, err := boardless.NewHandler(o)
+		dir := t.TempDir()
+		t.Setenv("ARDUINO_APP_CLI__APPS_DIR", filepath.Join(dir, "a"))
+		t.Setenv("ARDUINO_APP_CLI__DATA_DIR", filepath.Join(dir, "d"))
+		t.Setenv("ARDUINO_APP_BRICKS__CUSTOM_MODEL_DIR", filepath.Join(dir, "m"))
+		_, err := boardless.NewHandler(boardless.Options{})
 		require.Error(t, err)
 	})
 	t.Run("ventunoq", func(t *testing.T) {
-		o := ok
-		o.Board = "ventunoq"
-		_, err := boardless.NewHandler(o)
+		setEnv(t)
+		_, err := boardless.NewHandler(boardless.Options{Board: "ventunoq"})
 		require.NoError(t, err)
 	})
 }
@@ -118,11 +122,11 @@ func TestCatalog(t *testing.T) {
 }
 
 func TestApps(t *testing.T) {
-	srv, o := newServer(t)
+	srv, appsDir := newServer(t)
 	id := createApp(t, srv, "first")
 
 	t.Run("the app is in the Local workspace", func(t *testing.T) {
-		_, err := os.Stat(filepath.Join(o.AppsDir, "first", "app.yaml"))
+		_, err := os.Stat(filepath.Join(appsDir, "first", "app.yaml"))
 		require.NoError(t, err)
 	})
 
@@ -170,7 +174,7 @@ func TestApps(t *testing.T) {
 
 		code, body := do(t, srv, http.MethodDelete, "/v1/apps/"+id, nil)
 		require.Equal(t, http.StatusOK, code, string(body))
-		_, err := os.Stat(filepath.Join(o.AppsDir, "first"))
+		_, err := os.Stat(filepath.Join(appsDir, "first"))
 		require.ErrorIs(t, err, os.ErrNotExist)
 
 		var form bytes.Buffer
@@ -188,7 +192,7 @@ func TestApps(t *testing.T) {
 		defer resp.Body.Close()
 		out, _ := io.ReadAll(resp.Body)
 		require.Equal(t, http.StatusCreated, resp.StatusCode, string(out))
-		_, err = os.Stat(filepath.Join(o.AppsDir, "first", "app.yaml"))
+		_, err = os.Stat(filepath.Join(appsDir, "first", "app.yaml"))
 		require.NoError(t, err)
 	})
 }
