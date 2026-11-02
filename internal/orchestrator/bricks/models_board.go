@@ -3,8 +3,6 @@
 // SPDX-FileCopyrightText: Arduino s.r.l. and/or its affiliated companies
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//go:build !js
-
 package bricks
 
 import (
@@ -15,8 +13,8 @@ import (
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/modelsindex"
 )
 
-// BoardModels answers the service from the models index of the board. It is kept out of
-// the js build, where the index cannot run its containers.
+// BoardModels answers the service from a models index. An index with no Runner (boardless
+// mode) answers from its catalog.
 func BoardModels(idx *modelsindex.ModelsIndex) Models { return boardModels{idx} }
 
 type boardModels struct{ idx *modelsindex.ModelsIndex }

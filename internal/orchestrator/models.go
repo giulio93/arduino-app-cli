@@ -70,14 +70,14 @@ func AIModelDetails(ctx context.Context, modelsIndex *modelsindex.ModelsIndex, i
 // AIModelInstall downloads a model the internal model list declares and describes what
 // landed. publish reports the handler's own events as they arrive.
 func AIModelInstall(ctx context.Context, dockerClient command.Cli, modelsIndex *modelsindex.ModelsIndex, plat platform.Platform, id string, publish func(modelsindex.StreamMessage)) (modelsindex.AIModel, error) {
-	return modelsIndex.Install(ctx, dockerClient, id, plat, publish)
+	return modelsIndex.Install(ctx, modelRunner(dockerClient), id, plat, publish)
 }
 
 // AIModelDownload downloads a model no entry declares, from the links the caller supplies,
 // and describes it from the listing: the record the handler wrote is what says where the
 // files came from. The id is not an input, the downloader reports it.
 func AIModelDownload(ctx context.Context, dockerClient command.Cli, modelsIndex *modelsindex.ModelsIndex, plat platform.Platform, modelURL, mmprojURL string, publish func(modelsindex.StreamMessage)) (modelsindex.AIModel, error) {
-	return modelsIndex.DownloadByURL(ctx, dockerClient.Client(), modelURL, mmprojURL, plat, publish)
+	return modelsIndex.DownloadByURL(ctx, modelRunner(dockerClient), modelURL, mmprojURL, plat, publish)
 }
 
 var (
@@ -123,7 +123,7 @@ func AIModelDelete(ctx context.Context, dockerClient command.Cli, cfg config.Con
 	}
 
 	// TODO: skip the delete action when res.Status is already not-installed.
-	err = modelsIndex.Delete(ctx, dockerClient, platform, *res)
+	err = modelsIndex.Delete(ctx, modelRunner(dockerClient), platform, *res)
 	if err != nil {
 		return fmt.Errorf("error deleting model %q: %w", id, err)
 	}

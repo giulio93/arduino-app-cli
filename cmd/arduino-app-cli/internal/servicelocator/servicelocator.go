@@ -10,6 +10,8 @@ package servicelocator
 import (
 	"sync"
 
+	"github.com/arduino/arduino-app-cli/internal/orchestrator/modelsindex/dockerrunner"
+
 	dockerCommand "github.com/docker/cli/cli/command"
 	"go.bug.st/f"
 
@@ -36,7 +38,7 @@ var (
 	})
 
 	GetModelsIndex = sync.OnceValue(func() *modelsindex.ModelsIndex {
-		return f.Must(modelsindex.Load(GetPlatform(), globalConfig.AssetDir(), globalConfig.ModelsDir(), globalConfig.CustomModelsDir(), GetDockerClient().Client(), globalConfig))
+		return f.Must(modelsindex.Load(GetPlatform(), globalConfig.AssetDir(), globalConfig.ModelsDir(), globalConfig.CustomModelsDir(), dockerrunner.New(GetDockerClient().Client()), globalConfig))
 	})
 
 	GetServicesIndex = sync.OnceValue(func() *servicesindex.ServicesIndex {

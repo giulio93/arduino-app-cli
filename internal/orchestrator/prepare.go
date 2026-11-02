@@ -64,7 +64,7 @@ func PrepareRelease(
 		done := 50.0 + 50.0*float32(i)/float32(len(models.InternalModels))
 		cb(StreamMessage{data: "downloading the model " + model.ID})
 		cb(StreamMessage{progress: &Progress{Name: "models", Progress: done}})
-		if _, err := models.Install(ctx, docker, model.ID, plat, func(message modelsindex.StreamMessage) {
+		if _, err := models.Install(ctx, modelRunner(docker), model.ID, plat, func(message modelsindex.StreamMessage) {
 			if message.IsData() {
 				cb(StreamMessage{data: message.GetData()})
 			}
@@ -145,7 +145,7 @@ func prepareModels(
 			continue
 		}
 		cb(StreamMessage{data: "downloading the model " + selectedModel})
-		if _, err := modelIndex.Install(ctx, docker, selectedModel, plat, func(message modelsindex.StreamMessage) {
+		if _, err := modelIndex.Install(ctx, modelRunner(docker), selectedModel, plat, func(message modelsindex.StreamMessage) {
 			if message.IsData() {
 				cb(StreamMessage{data: message.GetData()})
 			}
