@@ -20,6 +20,7 @@ import (
 // started and stopped: through the sdk, and by project name alone.
 func TestComposeRoundTrip(t *testing.T) {
 	docker := getDockerCli(t)
+	eng := EngineOf(docker)
 	const projectName = "arduino-app-cli-round-trip"
 
 	prj := &types.Project{
@@ -37,10 +38,10 @@ func TestComposeRoundTrip(t *testing.T) {
 		},
 	}
 	t.Cleanup(func() {
-		_ = ComposeDown(t.Context(), docker, projectName, nil)
+		_ = eng.ComposeDown(t.Context(), projectName, nil)
 	})
 
-	require.NoError(t, ComposeUp(t.Context(), docker, prj, nil))
+	require.NoError(t, eng.ComposeUp(t.Context(), prj, nil))
 
 	// The labels are what compose finds its containers by, and what an app is read from.
 	containers, err := docker.Client().ContainerList(t.Context(), dockerClient.ContainerListOptions{
@@ -52,12 +53,12 @@ func TestComposeRoundTrip(t *testing.T) {
 	require.Equal(t, container.StateRunning, containers.Items[0].State)
 	require.Equal(t, "main", containers.Items[0].Labels["com.docker.compose.service"])
 
-	require.NoError(t, ComposeStop(t.Context(), docker, projectName, nil))
+	require.NoError(t, eng.ComposeStop(t.Context(), projectName, nil))
 	stopped, err := docker.Client().ContainerInspect(t.Context(), containers.Items[0].ID, dockerClient.ContainerInspectOptions{})
 	require.NoError(t, err)
 	require.Equal(t, container.StateExited, stopped.Container.State.Status)
 
-	require.NoError(t, ComposeDown(t.Context(), docker, projectName, nil))
+	require.NoError(t, eng.ComposeDown(t.Context(), projectName, nil))
 	gone, err := docker.Client().ContainerList(t.Context(), dockerClient.ContainerListOptions{
 		All:     true,
 		Filters: make(dockerClient.Filters).Add("label", "com.docker.compose.project="+projectName),
