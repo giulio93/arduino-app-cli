@@ -11,9 +11,8 @@ import (
 	"fmt"
 
 	"github.com/compose-spec/compose-go/v2/types"
-	"github.com/docker/cli/cli/command"
 
-	"github.com/arduino/arduino-app-cli/internal/dockerhelper"
+	"github.com/arduino/arduino-app-cli/internal/engine"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/app"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/bricksindex"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/config"
@@ -25,7 +24,7 @@ import (
 // frozen compose file names and the models it is wired with.
 func PrepareRelease(
 	ctx context.Context,
-	docker command.Cli,
+	docker engine.Engine,
 	arduinoApp app.ArduinoApp,
 	prj *types.Project,
 	cfg config.Configuration,
@@ -42,7 +41,7 @@ func PrepareRelease(
 	// The containers first: a failure here is not worth waiting for a model to find out.
 	cb(StreamMessage{data: "downloading the containers"})
 	cb(StreamMessage{progress: &Progress{Name: "containers", Progress: 0.0}})
-	if err := dockerhelper.PullImages(ctx, docker.Client(), dockerhelper.ComposeImages(prj),
+	if err := docker.PullImages(ctx, engine.ComposeImages(prj),
 		func(line string) { cb(StreamMessage{data: line}) },
 		func(label string, curr, total int64) {
 			// The containers are the first half of a prepare, the models the second.
@@ -82,7 +81,7 @@ func PrepareRelease(
 // install does, followed by the prepare part alone.
 func PrepareInstalledRelease(
 	ctx context.Context,
-	docker command.Cli,
+	docker engine.Engine,
 	provisioner *Provision,
 	arduinoApp app.ArduinoApp,
 	cfg config.Configuration,
@@ -103,11 +102,11 @@ func PrepareInstalledRelease(
 // checkImages verifies the container images an app needs are on the board
 func checkImages(
 	ctx context.Context,
-	docker command.Cli,
+	docker engine.Engine,
 	prj *types.Project,
 ) error {
-	for _, image := range dockerhelper.ComposeImages(prj) {
-		present, err := dockerhelper.HasImage(ctx, docker.Client(), image)
+	for _, image := range engine.ComposeImages(prj) {
+		present, err := docker.HasImage(ctx, image)
 		if err != nil {
 			return err
 		}
@@ -124,7 +123,7 @@ func checkImages(
 // an unknown or incompatible model is skipped here and fails the check that follows.
 func prepareModels(
 	ctx context.Context,
-	docker command.Cli,
+	docker engine.Engine,
 	bricks []app.Brick,
 	index *bricksindex.BricksIndex,
 	modelIndex *modelsindex.ModelsIndex,
@@ -160,7 +159,7 @@ func prepareModels(
 // froze. It runs once the release is in place: the paths it resolves are absolute.
 func renderRelease(
 	ctx context.Context,
-	docker command.Cli,
+	docker engine.Engine,
 	provisioner *Provision,
 	arduinoApp app.ArduinoApp,
 	cfg config.Configuration,
