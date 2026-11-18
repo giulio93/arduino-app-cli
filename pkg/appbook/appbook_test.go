@@ -6,6 +6,7 @@
 package appbook
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -53,4 +54,28 @@ func TestNew(t *testing.T) {
 	rec = serve("DELETE", "/v1/apps/"+renamed.ID, "")
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.NoDirExists(t, filepath.Join(tmp, "apps", "app2"))
+}
+
+func TestNewRejectsBadConfig(t *testing.T) {
+	_, err := New(Config{})
+	require.ErrorContains(t, err, "AppsDir is empty")
+	_, err = New(Config{AppsDir: t.TempDir()})
+	require.ErrorContains(t, err, "DataDir is empty")
+}
+
+func TestNewRelativeDirs(t *testing.T) {
+	t.Chdir(t.TempDir())
+	require.NoError(t, os.MkdirAll(filepath.Join("data", "assets"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join("data", "assets", "bricks-list.yaml"), []byte("bricks: []\n"), 0o600))
+	router, err := New(Config{AppsDir: "apps", DataDir: "data"})
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/apps", strings.NewReader(`{"name":"app1"}`)))
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var created struct{ ID string }
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+	id, err := base64.RawURLEncoding.DecodeString(created.ID)
+	require.NoError(t, err)
+	require.Equal(t, "user:app1", string(id))
 }

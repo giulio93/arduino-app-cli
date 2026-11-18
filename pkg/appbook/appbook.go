@@ -28,13 +28,32 @@ type Config struct {
 }
 
 // New serves the app CRUD on the directories of cfg.
+// DataDir must hold assets/bricks-list.yaml. Relative directories are made absolute.
 func New(cfg Config) (http.Handler, error) {
-	dataDir := paths.New(cfg.DataDir)
-	c := config.New(paths.New(cfg.AppsDir), dataDir, dataDir.Join("assets"))
+	appsDir, err := absDir("AppsDir", cfg.AppsDir)
+	if err != nil {
+		return nil, err
+	}
+	dataDir, err := absDir("DataDir", cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	c := config.New(appsDir, dataDir, dataDir.Join("assets"))
 	plat := platform.Platform{}
 	bricksIndex, err := bricksindex.Load(plat, c.AssetDir())
 	if err != nil {
 		return nil, fmt.Errorf("failed to load the bricks catalog: %w", err)
 	}
 	return httpapi.NewRouter(appid.NewAppProvider(c, plat), bricksIndex, bricks.NewService(bricks.NoModelLookup, bricksIndex), c, plat, httpapi.NoHooks), nil
+}
+
+func absDir(field, dir string) (*paths.Path, error) {
+	if dir == "" {
+		return nil, fmt.Errorf("appbook: %s is empty", field)
+	}
+	abs, err := paths.New(dir).Abs()
+	if err != nil {
+		return nil, fmt.Errorf("appbook: %s %q: %w", field, dir, err)
+	}
+	return abs, nil
 }
