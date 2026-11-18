@@ -216,11 +216,12 @@ func AppDetails(
 
 	// Retrieve the app status if available: an app that never ran is uninitialized
 	appsStatusByPath, err := appsStatus(ctx)
-	if err != nil {
-		slog.Error("unable to get running app", slog.String("error", err.Error()))
-	}
 	var status Status
-	if appsStatusByPath != nil {
+	switch {
+	case err != nil:
+		slog.Warn("unable to get app status", slog.String("error", err.Error()), slog.String("path", userApp.FullPath.String()))
+		status = StatusStopped
+	case appsStatusByPath != nil:
 		status = StatusUninitialized
 		if s, ok := appsStatusByPath[userApp.FullPath.String()]; ok {
 			status = s
@@ -437,10 +438,18 @@ type AppEditRequest struct {
 	Default     *bool
 }
 
-// EditApp edits the descriptor of an app, its folder name and the default app.
-func EditApp(req AppEditRequest, editApp *app.ArduinoApp, cfg config.Configuration) error {
+// Validate checks the request before any edit or hook runs.
+func (req AppEditRequest) Validate() error {
 	if req.Name != nil && slug.Make(*req.Name) == "" {
 		return fmt.Errorf("%w: invalid app name %q", app.ErrInvalidApp, *req.Name)
+	}
+	return nil
+}
+
+// EditApp edits the descriptor of an app, its folder name and the default app.
+func EditApp(req AppEditRequest, editApp *app.ArduinoApp, cfg config.Configuration) error {
+	if err := req.Validate(); err != nil {
+		return err
 	}
 
 	if req.Name != nil || req.Icon != nil || req.Description != nil {

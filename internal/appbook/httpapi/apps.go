@@ -144,6 +144,9 @@ func HandleAppDetailsEdits(
 		}
 
 		err := func() error {
+			if err := req.Validate(); err != nil {
+				return err
+			}
 			if err := hooks.BeforeEdit(r.Context(), req, appToEdit); err != nil {
 				return err
 			}

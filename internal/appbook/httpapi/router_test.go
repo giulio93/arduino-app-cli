@@ -92,6 +92,23 @@ func TestRouter(t *testing.T) {
 		require.NotContains(t, rec.Body.String(), `"status"`)
 	})
 
+	t.Run("a status error lists the app uninitialized and shows it stopped", func(t *testing.T) {
+		hooks.AppsStatus = func(context.Context) (map[string]appbook.Status, error) {
+			return map[string]appbook.Status{}, errors.New("docker down")
+		}
+		rec := serve("GET", "/v1/apps?filter=apps", "")
+		require.Contains(t, rec.Body.String(), `"status":"uninitialized"`)
+		rec = serve("GET", appPath, "")
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.Contains(t, rec.Body.String(), `"status":"stopped"`)
+	})
+
+	t.Run("an invalid name is rejected before the hook", func(t *testing.T) {
+		hooks.BeforeEdit = func(context.Context, appbook.AppEditRequest, app.ArduinoApp) error { return errors.New("docker down") }
+		rec := serve("PATCH", appPath, `{"name":"!!!"}`)
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	})
+
 	t.Run("a hook error stops the edit", func(t *testing.T) {
 		hooks.BeforeEdit = func(context.Context, appbook.AppEditRequest, app.ArduinoApp) error { return appbook.ErrAppRunning }
 		rec := serve("PATCH", appPath, `{"name":"app2"}`)
