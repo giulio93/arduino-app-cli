@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/arduino/go-paths-helper"
+	"github.com/goccy/go-yaml"
 	"github.com/gosimple/slug"
 	"go.bug.st/f"
-	"gopkg.in/yaml.v2"
 
 	"github.com/arduino/arduino-app-cli/internal/fatomic"
 	"github.com/arduino/arduino-app-cli/internal/orchestrator/app"
