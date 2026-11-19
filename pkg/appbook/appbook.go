@@ -30,7 +30,7 @@ type Config struct {
 }
 
 // New serves the app CRUD on the directories of cfg.
-// DataDir must hold assets/bricks-list.yaml. Relative directories are made absolute.
+// DataDir must hold assets/<runner version>/bricks-list.yaml, as on a board, or assets/bricks-list.yaml. Relative directories are made absolute.
 func New(cfg Config) (http.Handler, error) {
 	appsDir, err := absDir("AppsDir", cfg.AppsDir)
 	if err != nil {
@@ -40,7 +40,12 @@ func New(cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := config.New(appsDir, dataDir, dataDir.Join("assets"))
+	// The daemon keeps the catalog of each runner in assets/<version>; a flat assets dir is read as is.
+	assetsDir := dataDir.Join("assets", config.RunnerVersion)
+	if !assetsDir.IsDir() {
+		assetsDir = dataDir.Join("assets")
+	}
+	c := config.New(appsDir, dataDir, assetsDir)
 	plat := platform.Platform{}
 	if cfg.Board != "" {
 		p, ok := platform.ForBoard(cfg.Board)
