@@ -45,6 +45,7 @@ type AppInfo struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
 	Icon        string   `json:"icon"`
+	Target      string   `json:"target,omitempty"`
 	Status      Status   `json:"status,omitempty"`
 	Example     bool     `json:"example"`
 	Default     bool     `json:"default"`
@@ -139,6 +140,7 @@ func ListApps(
 				Name:         app.Name,
 				Description:  app.Descriptor.Description,
 				Icon:         app.Descriptor.Icon,
+				Target:       app.Descriptor.Target,
 				Example:      id.IsExample(),
 				Default:      isDefault,
 				Release:      isRelease,
@@ -158,6 +160,7 @@ type AppDetailedInfo struct {
 	Path         string             `json:"path"`
 	Description  string             `json:"description"`
 	Icon         string             `json:"icon"`
+	Target       string             `json:"target,omitempty"`
 	Status       Status             `json:"status,omitempty" required:"true"`
 	Example      bool               `json:"example"`
 	Default      bool               `json:"default"`
@@ -234,6 +237,7 @@ func AppDetails(
 		Path:         userApp.FullPath.String(),
 		Description:  userApp.Descriptor.Description,
 		Icon:         userApp.Descriptor.Icon,
+		Target:       userApp.Descriptor.Target,
 		Status:       status,
 		Example:      id.IsExample(),
 		Default:      defaultAppPath == userApp.FullPath.String(),
@@ -261,6 +265,7 @@ type CreateAppRequest struct {
 	Name        string
 	Icon        string
 	Description string
+	Target      string
 	Bricks      []string
 	SkipSketch  bool
 }
@@ -302,6 +307,7 @@ func CreateApp(
 		Ports:       []int{},
 		Bricks:      appBricks,
 		Icon:        req.Icon,
+		Target:      req.Target,
 	}
 	if err := newApp.IsValid(); err != nil {
 		return CreateAppResponse{}, fmt.Errorf("%w: %v", app.ErrInvalidApp, err)
@@ -435,6 +441,7 @@ type AppEditRequest struct {
 	Name        *string
 	Icon        *string
 	Description *string
+	Target      *string
 	Default     *bool
 }
 
@@ -452,7 +459,7 @@ func EditApp(req AppEditRequest, editApp *app.ArduinoApp, cfg config.Configurati
 		return err
 	}
 
-	if req.Name != nil || req.Icon != nil || req.Description != nil {
+	if req.Name != nil || req.Icon != nil || req.Description != nil || req.Target != nil {
 		if err := editAppFolder(req, editApp, cfg); err != nil {
 			return err
 		}
@@ -570,6 +577,9 @@ func editAppFolder(req AppEditRequest, editApp *app.ArduinoApp, cfg config.Confi
 	}
 	if req.Description != nil {
 		editable.Descriptor.Description = *req.Description
+	}
+	if req.Target != nil {
+		editable.Descriptor.Target = *req.Target
 	}
 
 	if err := editable.Descriptor.IsValid(); err != nil {

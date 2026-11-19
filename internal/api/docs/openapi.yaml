@@ -2013,6 +2013,8 @@ components:
           type: string
         status:
           $ref: '#/components/schemas/Status'
+        target:
+          type: string
       required:
       - id
       - name
@@ -2044,6 +2046,8 @@ components:
           type: string
         status:
           $ref: '#/components/schemas/Status'
+        target:
+          type: string
       type: object
     AppListResponse:
       properties:
@@ -2285,6 +2289,10 @@ components:
           description: application name
           example: My Awesome App
           type: string
+        target:
+          description: board the app is written for; empty means any board
+          example: unoq
+          type: string
       required:
       - name
       type: object
@@ -2322,6 +2330,11 @@ components:
         name:
           description: application name
           example: My Awesome App
+          nullable: true
+          type: string
+        target:
+          description: board the app is written for; empty means any board
+          example: unoq
           nullable: true
           type: string
       type: object

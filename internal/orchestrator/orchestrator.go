@@ -101,6 +101,10 @@ func StartApp(
 		cb = func(StreamMessage) {}
 	}
 
+	if err := CheckTarget(appToStart, platform); err != nil {
+		return err
+	}
+
 	bricksIndex = appToStart.Bricks(bricksIndex)
 
 	// A release validates against the models index its build froze, which knows its custom models.
@@ -893,4 +897,15 @@ func migrateRemoveRouterBridgeIfNeeded(ctx context.Context, platform platform.Pl
 	}
 
 	return false, nil
+}
+
+// ErrTargetMismatch is returned when an app is written for another board than the one it starts on.
+var ErrTargetMismatch = errors.New("target mismatch")
+
+// CheckTarget refuses an app whose target names another board. An app with no target runs on any board.
+func CheckTarget(a app.ArduinoApp, plat platform.Platform) error {
+	if a.Descriptor.Target == "" || a.Descriptor.Target == plat.BoardName {
+		return nil
+	}
+	return fmt.Errorf("%w: app %q is for %s, this board is a %s", ErrTargetMismatch, a.Name, a.Descriptor.Target, plat.BoardName)
 }

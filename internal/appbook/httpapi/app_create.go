@@ -24,6 +24,7 @@ type CreateAppRequest struct {
 	Name        string `json:"name" description:"application name" example:"My Awesome App" required:"true"`
 	Icon        string `json:"icon" description:"application icon" `
 	Description string `json:"description" description:"application description" `
+	Target      string `json:"target" description:"board the app is written for; empty means any board" example:"unoq"`
 }
 
 func HandleAppCreate(
@@ -51,6 +52,7 @@ func HandleAppCreate(
 				Name:        req.Name,
 				Icon:        req.Icon,
 				Description: req.Description,
+				Target:      req.Target,
 				SkipSketch:  skipSketch,
 			},
 			bricksIndex,

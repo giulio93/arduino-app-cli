@@ -6,6 +6,11 @@ name: {{ .Name }}
 
 # The icon for the application, can be an emoji or a short string.
 icon: {{ .Icon }}
+{{- if .Target }}
+
+# The board the application is written for. Without it, the application runs on any board.
+target: {{ .Target }}
+{{- end }}
 
 # A list of network ports that the application exposes.
 # Example: [80, 443]

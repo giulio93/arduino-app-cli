@@ -9,11 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 
 	emoji "github.com/Andrew-M-C/go.emoji"
 	"github.com/arduino/go-paths-helper"
 	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
+
+	"github.com/arduino/arduino-app-cli/internal/platform"
 )
 
 type Brick struct {
@@ -29,6 +32,8 @@ type AppDescriptor struct {
 	Ports       []int   `yaml:"ports"`
 	Bricks      []Brick `yaml:"bricks"`
 	Icon        string  `yaml:"icon,omitempty"`
+	// Target is the board the app is written for, as platform names it. Empty means any board.
+	Target string `yaml:"target,omitempty"`
 	// Deprecated: Use the RequiredDevices section defined per Brick instead.
 	RequiredDevices []string `yaml:"required_devices,omitempty"`
 }
@@ -41,6 +46,7 @@ func (d AppDescriptor) MarshalYAML() (any, error) {
 		Ports       []int              `yaml:"ports"`
 		Bricks      []map[string]Brick `yaml:"bricks"`
 		Icon        string             `yaml:"icon,omitempty"`
+		Target      string             `yaml:"target,omitempty"`
 		// Deprecated: Use the RequiredDevices section defined per Brick instead.
 		RequiredDevices []string `yaml:"required_devices,omitempty"`
 	}
@@ -55,6 +61,7 @@ func (d AppDescriptor) MarshalYAML() (any, error) {
 		Ports:           d.Ports,
 		Bricks:          bricks,
 		Icon:            d.Icon,
+		Target:          d.Target,
 		RequiredDevices: d.RequiredDevices,
 	}, nil
 }
@@ -124,6 +131,9 @@ func (a *AppDescriptor) IsValid() error {
 		if !isSingleEmoji(a.Icon) {
 			allErrors = errors.Join(allErrors, fmt.Errorf("icon %q is not a valid single emoji", a.Icon))
 		}
+	}
+	if a.Target != "" && !slices.Contains(platform.SupportedBoards(), a.Target) {
+		allErrors = errors.Join(allErrors, fmt.Errorf("target %q is not a supported board", a.Target))
 	}
 	return allErrors
 }

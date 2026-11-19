@@ -79,3 +79,45 @@ func TestNewRelativeDirs(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "user:app1", string(id))
 }
+
+// An app's target is written at create, changed by an edit, and read back.
+func TestNewTarget(t *testing.T) {
+	tmp := t.TempDir()
+	assets := filepath.Join(tmp, "data", "assets")
+	require.NoError(t, os.MkdirAll(assets, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(assets, "bricks-list.yaml"), []byte("bricks: []\n"), 0o600))
+	router, err := New(Config{AppsDir: filepath.Join(tmp, "apps"), DataDir: filepath.Join(tmp, "data"), Board: "unoq"})
+	require.NoError(t, err)
+	serve := func(method, path, body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(method, path, strings.NewReader(body)))
+		return rec
+	}
+
+	rec := serve("POST", "/v1/apps", `{"name":"app1","target":"unoq"}`)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var created struct{ ID string }
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+	require.FileExists(t, filepath.Join(tmp, "apps", "app1", "app.yaml"))
+	yml, err := os.ReadFile(filepath.Join(tmp, "apps", "app1", "app.yaml"))
+	require.NoError(t, err)
+	require.Contains(t, string(yml), "target: unoq")
+
+	rec = serve("PATCH", "/v1/apps/"+created.ID, `{"target":"ventunoq"}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	rec = serve("GET", "/v1/apps/"+created.ID, "")
+	require.Contains(t, rec.Body.String(), `"target":"ventunoq"`)
+	rec = serve("GET", "/v1/apps?filter=apps", "")
+	require.Contains(t, rec.Body.String(), `"target":"ventunoq"`)
+
+	rec = serve("PATCH", "/v1/apps/"+created.ID, `{"target":"esp32"}`)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+
+	rec = serve("POST", "/v1/apps", `{"name":"app2","target":"nope"}`)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+}
+
+func TestNewRejectsUnknownBoard(t *testing.T) {
+	_, err := New(Config{AppsDir: t.TempDir(), DataDir: t.TempDir(), Board: "nope"})
+	require.ErrorContains(t, err, "unknown board")
+}

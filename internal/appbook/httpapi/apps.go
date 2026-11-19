@@ -48,6 +48,7 @@ type EditRequest struct {
 	Name        *string `json:"name" example:"My Awesome App" description:"application name"`
 	Icon        *string `json:"icon" example:"💻" description:"application icon"`
 	Description *string `json:"description" example:"This is my awesome app" description:"application description"`
+	Target      *string `json:"target" example:"unoq" description:"board the app is written for; empty means any board"`
 	Default     *bool   `json:"default"`
 }
 
@@ -127,7 +128,7 @@ func HandleAppDetailsEdits(
 			render.EncodeResponse(w, http.StatusBadRequest, render.ErrorResponse{Details: "invalid request"})
 			return
 		}
-		onlyDefault := editRequest.Description == nil && editRequest.Icon == nil && editRequest.Name == nil
+		onlyDefault := editRequest.Description == nil && editRequest.Icon == nil && editRequest.Name == nil && editRequest.Target == nil
 		switch {
 		case id.IsRelease() && !onlyDefault:
 			render.EncodeResponse(w, http.StatusForbidden, render.ErrorResponse{Details: "you can patch just the default field for a release"})
@@ -141,6 +142,7 @@ func HandleAppDetailsEdits(
 			Name:        editRequest.Name,
 			Icon:        editRequest.Icon,
 			Description: editRequest.Description,
+			Target:      editRequest.Target,
 		}
 
 		err := func() error {

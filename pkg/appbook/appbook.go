@@ -25,6 +25,8 @@ type Config struct {
 	AppsDir string
 	// DataDir holds the examples, the installed releases, the default app and, in assets, the bricks catalog.
 	DataDir string
+	// Board, as platform names it, filters the bricks and examples for that board. Empty serves every board's.
+	Board string
 }
 
 // New serves the app CRUD on the directories of cfg.
@@ -40,6 +42,13 @@ func New(cfg Config) (http.Handler, error) {
 	}
 	c := config.New(appsDir, dataDir, dataDir.Join("assets"))
 	plat := platform.Platform{}
+	if cfg.Board != "" {
+		p, ok := platform.ForBoard(cfg.Board)
+		if !ok {
+			return nil, fmt.Errorf("appbook: unknown board %q", cfg.Board)
+		}
+		plat = p
+	}
 	bricksIndex, err := bricksindex.Load(plat, c.AssetDir())
 	if err != nil {
 		return nil, fmt.Errorf("failed to load the bricks catalog: %w", err)

@@ -52,6 +52,10 @@ func HandleAppStart(
 			render.EncodeResponse(w, http.StatusInternalServerError, models.ErrorResponse{Details: "unable to find the app"})
 			return
 		}
+		if err := orchestrator.CheckTarget(app, platform); err != nil {
+			render.EncodeResponse(w, http.StatusConflict, models.ErrorResponse{Details: err.Error()})
+			return
+		}
 
 		sseStream, err := render.NewSSEStream(r.Context(), w)
 		if err != nil {
